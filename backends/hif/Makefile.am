@@ -3,7 +3,8 @@ plugin_LTLIBRARIES = libpk_backend_hif.la
 libpk_backend_hif_la_SOURCES =						\
 	hif-backend.c							\
 	hif-backend.h							\
-	pk-backend-hif.c
+	pk-backend-hif.c						\
+	pk-backend-hif-comps.c
 libpk_backend_hif_la_LIBADD = $(PK_PLUGIN_LIBS) $(HIF_LIBS)
 libpk_backend_hif_la_CPPFLAGS =						\
 	$(HIF_CFLAGS)							\
