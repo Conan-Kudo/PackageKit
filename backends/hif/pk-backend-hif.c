@@ -138,7 +138,7 @@ pk_backend_sack_cache_invalidate (PkBackend *backend, const gchar *why)
 static void
 pk_backend_hif_repos_changed_cb (HifRepos *self, PkBackend *backend)
 {
-	pk_backend_sack_cache_invalidate (backend, "yum.repos.d changed");
+	pk_backend_sack_cache_invalidate (backend, "distro.repos.d changed");
 	pk_backend_repo_list_changed (backend);
 }
 
@@ -186,7 +186,7 @@ pk_backend_setup_hif_context (HifContext *context, GKeyFile *conf, const gchar *
 	hif_context_set_cache_dir (context, cache_dir);
 	solv_dir = g_build_filename (destdir, "/var/cache/PackageKit", release_ver, "hawkey", NULL);
 	hif_context_set_solv_dir (context, solv_dir);
-	repo_dir = g_build_filename (destdir, "/etc/yum.repos.d", NULL);
+	repo_dir = g_build_filename (destdir, "/etc/distro.repos.d", NULL);
 	hif_context_set_repo_dir (context, repo_dir);
 	lock_dir = g_build_filename (destdir, "/var/run", NULL);
 	hif_context_set_lock_dir (context, lock_dir);
@@ -1266,7 +1266,7 @@ pk_backend_get_repo_list_thread (PkBackendJob *job,
 	if (sources == NULL) {
 		pk_backend_job_error_code (job,
 					   error->code,
-					   "failed to scan yum.repos.d: %s",
+					   "failed to scan distro.repos.d: %s",
 					   error->message);
 		return;
 	}
