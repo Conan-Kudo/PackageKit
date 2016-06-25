@@ -1182,65 +1182,44 @@ static gboolean
 source_is_supported (HifSource *source)
 {
 	const char *id = hif_source_get_id (source);
-	guint i;
+	guint i, j, k, l;
+
+	const gchar *valid_sourcesect[] = { "",
+					  "-tainted",
+					  "-nonfree",
+					  NULL };
+
+	const gchar *valid_sourcetype[] = { "",
+					  "-debuginfo",
+					  "-source",
+					  NULL };
+
+	const gchar *valid_arch[] = { "x86_64",
+				      "i586",
+				      "armv7hl",
+				      "armv5tl",
+				      NULL };
+
 	const gchar *valid[] = { "mageia",
-				 "mageia-debuginfo",
-				 "mageia-source",
-				 "mageia-tainted",
-				 "mageia-tainted-debuginfo",
-				 "mageia-tainted-source",
-				 "mageia-nonfree",
-				 "mageia-nonfree-debuginfo",
-				 "mageia-nonfree-source",
 				 "updates",
-				 "updates-debuginfo",
-				 "updates-source",
-				 "updates-tainted",
-				 "updates-tainted-debuginfo",
-				 "updates-tainted-source",
-				 "updates-nonfree",
-				 "updates-nonfree-debuginfo",
-				 "updates-nonfree-source",
 				 "updates_testing",
-				 "updates_testing-debuginfo",
-				 "updates_testing-source",
-				 "updates_testing-tainted",
-				 "updates_testing-tainted-debuginfo",
-				 "updates_testing-tainted-source",
-				 "updates_testing-nonfree",
-				 "updates_testing-nonfree-debuginfo",
-				 "updates_testing-nonfree-source",
 				 "backports",
-				 "backports-debuginfo",
-				 "backports-source",
-				 "backports-tainted",
-				 "backports-tainted-debuginfo",
-				 "backports-tainted-source",
-				 "backports-nonfree",
-				 "backports-nonfree-debuginfo",
-				 "backports-nonfree-source",
 				 "backports_testing",
-				 "backports_testing-debuginfo",
-				 "backports_testing-source",
-				 "backports_testing-tainted",
-				 "backports_testing-tainted-debuginfo",
-				 "backports_testing-tainted-source",
-				 "backports_testing-nonfree",
-				 "backports_testing-nonfree-debuginfo",
-				 "backports_testing-nonfree-source",
 				 "cauldron",
-				 "cauldron-debuginfo",
-				 "cauldron-source",
-				 "cauldron-tainted",
-				 "cauldron-tainted-debuginfo",
-				 "cauldron-tainted-source",
-				 "cauldron-nonfree",
-				 "cauldron-nonfree-debuginfo",
-				 "cauldron-nonfree-source",
 				 NULL };
 	for (i = 0; valid[i] != NULL; i++) {
-		if (g_strcmp0 (id, valid[i]) == 0)
-			return TRUE;
+		for (j = 0; valid_arch[j] != NULL; j++) {
+			for (k = 0; valid_sourcesect[k] != NULL; k++) {
+				for (l = 0; valid_sourcetype[l] != NULL; l++) {
+					gchar *source_entry = g_strconcat(valid[i], "-", valid_arch[j], valid_sourcesect[k], valid_sourcetype[l], NULL);
+					if (g_strcmp0 (id, source_entry) == 0) {
+						g_free(source_entry);
+						return TRUE;
+					}
+					g_free(source_entry);
+				}
+			}
+		}
 	}
 	return FALSE;
 }
