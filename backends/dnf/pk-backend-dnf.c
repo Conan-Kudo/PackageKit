@@ -139,8 +139,10 @@ pk_backend_setup_dnf_context (DnfContext *context, GKeyFile *conf, const gchar *
 	g_autofree gchar *cache_dir = NULL;
 	g_autofree gchar *destdir = NULL;
 	g_autofree gchar *lock_dir = NULL;
-	g_autofree gchar *repo_dir = NULL;
+	g_autofree gchar **repo_dirs = NULL;
+	g_autofree gchar **var_dirs = NULL;
 	g_autofree gchar *solv_dir = NULL;
+	guint diriter;
 
 	destdir = g_key_file_get_string (conf, "Daemon", "DestDir", NULL);
 	if (destdir == NULL)
@@ -150,10 +152,16 @@ pk_backend_setup_dnf_context (DnfContext *context, GKeyFile *conf, const gchar *
 	dnf_context_set_cache_dir (context, cache_dir);
 	solv_dir = g_build_filename (destdir, "/var/cache/PackageKit", release_ver, "hawkey", NULL);
 	dnf_context_set_solv_dir (context, solv_dir);
-	repo_dir = g_build_filename (destdir, "/etc/yum.repos.d", NULL);
-	dnf_context_set_repo_dir (context, repo_dir);
 	lock_dir = g_build_filename (destdir, "/var/run", NULL);
 	dnf_context_set_lock_dir (context, lock_dir);
+	repo_dirs = dnf_context_get_repos_dir (context);
+	for (diriter = 0; repo_dirs[diriter] != NULL; diriter++)
+		repo_dirs[diriter] = g_build_filename (destdir, repo_dirs[diriter]);
+	dnf_context_set_repos_dir (context, repo_dirs);
+	var_dirs = dnf_context_get_vars_dir (context);
+	for (diriter = 0; var_dirs[diriter] != NULL; diriter++)
+		var_dirs[diriter] = g_build_filename (destdir, var_dirs[diriter]);
+	dnf_context_set_vars_dir (context, var_dirs);
 	dnf_context_set_rpm_verbosity (context, "info");
 
 	/* use this initial data if repos are not present */
