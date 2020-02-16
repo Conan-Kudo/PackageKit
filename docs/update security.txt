@@ -46,7 +46,7 @@ the chosen method. This method will emit signals such as ::Package(), then
 the interface from the bus.
 
 There is a concern that a session service can be written to automatically
-authenticate methods, and replace the native client, but this is not possible.
+authenticatesecurity.txt methods, and replace the native client, but this is not possible.
 
 When authenticating, polkitd-1 passes a cookie to the authentication agent. If
 the user enters the right password, the authentication agent calls
