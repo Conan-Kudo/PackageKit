@@ -19,9 +19,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#ifdef HAVE_CONFIG_H
-#  include <config.h>
-#endif
+#include <config.h>
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -421,7 +419,7 @@ pk_backend_build_library_path (PkBackend *backend, const gchar *name)
 		directory = "test";
 
 	/* prefer the local version */
-	path = g_build_filename ("..", "backends", directory, ".libs", filename, NULL);
+	path = g_build_filename ("backends", directory, filename, NULL);
 	if (g_file_test (path, G_FILE_TEST_EXISTS) == FALSE) {
 		g_debug ("local backend not found '%s'", path);
 		g_free (path);
@@ -477,6 +475,7 @@ pk_backend_load (PkBackend *backend, GError **error)
 
 	/* the "hawkey" and "hif" backends are superseded by "dnf" */
 	if (g_strcmp0 (backend_name, "hawkey") == 0 ||
+	    g_strcmp0 (backend_name, "yum") == 0 ||
 	    g_strcmp0 (backend_name, "hif") == 0) {
 		g_free (backend_name);
 		backend_name = g_strdup ("dnf");

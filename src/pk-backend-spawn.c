@@ -19,9 +19,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#ifdef HAVE_CONFIG_H
-#  include <config.h>
-#endif
+#include <config.h>
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -846,7 +844,7 @@ pk_backend_spawn_helper_va_list (PkBackendSpawn *backend_spawn,
 	gboolean background;
 	PkBackendSpawnPrivate *priv = backend_spawn->priv;
 	PkSpawnArgvFlags flags = PK_SPAWN_ARGV_FLAGS_NONE;
-#if PK_BUILD_LOCAL
+#ifdef SOURCEROOTDIR
 	const gchar *directory;
 #endif
 	g_autoptr(GError) error = NULL;
@@ -863,18 +861,18 @@ pk_backend_spawn_helper_va_list (PkBackendSpawn *backend_spawn,
 		return FALSE;
 	}
 
-#if PK_BUILD_LOCAL
+#ifdef SOURCEROOTDIR
 	/* prefer the local version */
 	directory = priv->name;
 	if (g_str_has_prefix (directory, "test_"))
 		directory = "test";
 
-	filename = g_build_filename ("..", "backends", directory, "helpers",
+	filename = g_build_filename (SOURCEROOTDIR, "backends", directory, "helpers",
 				     argv[PK_BACKEND_SPAWN_ARGV0], NULL);
 	if (g_file_test (filename, G_FILE_TEST_EXISTS) == FALSE) {
 		g_debug ("local helper not found '%s'", filename);
 		g_free (filename);
-		filename = g_build_filename ("..", "backends", directory,
+		filename = g_build_filename (SOURCEROOTDIR, "backends", directory,
 					     argv[PK_BACKEND_SPAWN_ARGV0], NULL);
 	}
 	if (g_file_test (filename, G_FILE_TEST_EXISTS) == FALSE) {

@@ -175,6 +175,9 @@ pk_test_backend_func (void)
 	ret = g_unlink (filename);
 	g_assert (!ret);
 
+	/* wait for config file change */
+	_g_test_loop_run_with_timeout (5000);
+
 	/* connect */
 	job = pk_backend_job_new (conf);
 	pk_backend_job_set_backend (job, backend);
@@ -307,10 +310,10 @@ pk_test_backend_spawn_func (void)
 	const gchar *text;
 	gboolean ret;
 	gchar *uri;
-	GError *error = NULL;
 	g_autoptr(GKeyFile) conf = NULL;
 	g_autoptr(PkBackend) backend = NULL;
 	g_autoptr(PkBackendJob) job = NULL;
+	g_autoptr(GError) error = NULL;
 
 	/* get an backend_spawn */
 	conf = g_key_file_new ();
@@ -335,13 +338,9 @@ pk_test_backend_spawn_func (void)
 	text = pk_backend_spawn_get_name (backend_spawn);
 	g_assert_cmpstr (text, ==, "test_spawn");
 
-	/* needed to avoid an error */
-	ret = pk_backend_load (backend, &error);
-	g_assert_no_error (error);
-	g_assert (ret);
-
 	/* test pk_backend_spawn_inject_data Percentage1 */
-	ret = pk_backend_spawn_inject_data (backend_spawn, job, "percentage\t0", NULL);
+	ret = pk_backend_spawn_inject_data (backend_spawn, job, "percentage\t0", &error);
+	g_assert_no_error (error);
 	g_assert (ret);
 
 	/* test pk_backend_spawn_inject_data Percentage2 */
@@ -437,10 +436,6 @@ pk_test_backend_spawn_func (void)
 				  PK_BACKEND_SIGNAL_PACKAGE,
 				  (PkBackendJobVFunc) pk_test_backend_spawn_package_cb,
 				  backend_spawn);
-
-	/* needed to avoid an error */
-	ret = pk_backend_load (backend, NULL);
-	g_assert (ret);
 
 	/* test search-name.sh running */
 	ret = pk_backend_spawn_helper (backend_spawn, job, "search-name.sh", "none", "bar", NULL);
@@ -650,7 +645,7 @@ pk_test_spawn_func (void)
 	/* run the dispatcher */
 	mexit = PK_SPAWN_EXIT_TYPE_UNKNOWN;
 	argv = g_strsplit (TESTDATADIR "/pk-spawn-dispatcher.py\tsearch-name\tnone\tpower manager", "\t", 0);
-	envp = g_strsplit ("NETWORK=TRUE LANG=C BACKGROUND=TRUE INTERACTIVE=TRUE", " ", 0);
+	envp = g_strsplit ("NETWORK=TRUE LANG=C BACKGROUND=TRUE INTERACTIVE=TRUE UID=500", " ", 0);
 	ret = pk_spawn_argv (spawn, argv, envp, PK_SPAWN_ARGV_FLAGS_NONE, &error);
 	g_assert_no_error (error);
 	g_assert (ret);
@@ -831,7 +826,7 @@ pk_test_transaction_db_func (void)
 					   NULL,
 					   NULL,
 					   NULL);
-	g_assert (!ret);
+	g_assert (ret);
 	g_assert_cmpstr (proxy_http, ==, NULL);
 	g_assert_cmpstr (proxy_ftp, ==, NULL);
 
@@ -843,7 +838,7 @@ pk_test_transaction_db_func (void)
 					   NULL,
 					   NULL,
 					   NULL);
-	g_assert (!ret);
+	g_assert (ret);
 	g_assert_cmpstr (proxy_http, ==, NULL);
 	g_assert_cmpstr (proxy_ftp, ==, NULL);
 
@@ -1412,7 +1407,7 @@ main (int argc, char **argv)
 #endif
 
 #ifndef PK_BUILD_LOCAL
-	g_warning ("you need to compile with --enable-local for make check support");
+	g_warning ("you need to compile with -Dlocal_checkout=true for ninja test support");
 #endif
 
 	/* components */
