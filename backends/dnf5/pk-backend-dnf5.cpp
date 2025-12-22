@@ -27,6 +27,8 @@
 #include <libdnf5/repo/repo_query.hpp>
 #include <libdnf5/rpm/arch.hpp>
 #include <libdnf5/repo/package_downloader.hpp>
+#include <libdnf5/base/goal.hpp>
+#include <libdnf5/advisory/advisory_query.hpp>
 #include <algorithm>
 #include <vector>
 #include <set>
@@ -106,6 +108,8 @@ pk_backend_get_roles (PkBackend *backend)
         PK_ROLE_ENUM_GET_REPO_LIST,
         PK_ROLE_ENUM_RESOLVE,
         PK_ROLE_ENUM_REFRESH_CACHE,
+        PK_ROLE_ENUM_GET_UPDATES,
+        PK_ROLE_ENUM_GET_UPDATE_DETAIL,
         -1);
     return roles;
 }
@@ -733,6 +737,140 @@ pk_backend_download_packages (PkBackend *backend,
         pk_backend_job_files(job, NULL, files_c_str.data());
 
     } catch (const std::exception &e) {
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_get_updates (PkBackend *backend,
+                        PkBackendJob *job,
+                        PkBitfield filters)
+{
+    g_debug ("PkBackendDnf5: get_updates");
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        libdnf5::Goal goal(*dnf5_base);
+        goal.add_rpm_upgrade();
+        
+        libdnf5::base::Transaction transaction = goal.resolve();
+        auto transaction_items = transaction.get_transaction_packages();
+        
+        for (const auto &item : transaction_items) {
+             auto action = item.get_action();
+             if (action != libdnf5::transaction::TransactionItemAction::UPGRADE &&
+                 action != libdnf5::transaction::TransactionItemAction::INSTALL) {
+                  continue;
+             }
+             
+             auto pkg = item.get_package();
+             std::string repo_id = pkg.get_repo_id();
+             std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+             
+             // Emit as AVAILABLE (standard for updates list in PK)
+             pk_backend_job_package(job, PK_INFO_ENUM_AVAILABLE, pid.c_str(), pkg.get_summary().c_str());
+        }
+
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: GetUpdates failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_get_update_detail (PkBackend *backend,
+                              PkBackendJob *job,
+                              gchar **package_ids)
+{
+    g_debug ("PkBackendDnf5: get_update_detail");
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        auto pkgs = dnf5_resolve_package_ids(package_ids);
+        if (pkgs.empty()) {
+             pk_backend_job_finished(job);
+             return;
+        }
+
+        GPtrArray *update_details_array = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
+
+        for (const auto &pkg : pkgs) {
+             libdnf5::advisory::AdvisoryQuery query(*dnf5_base);
+             libdnf5::rpm::Nevra nevra;
+             nevra.set_name(pkg.get_name());
+             nevra.set_epoch(pkg.get_epoch());
+             nevra.set_version(pkg.get_version());
+             nevra.set_release(pkg.get_release());
+             nevra.set_arch(pkg.get_arch());
+             std::vector<libdnf5::rpm::Nevra> single_nevra = { nevra };
+             query.filter_packages(single_nevra);
+             
+             std::string update_text;
+             GPtrArray *vendor_urls = g_ptr_array_new_with_free_func (g_free);
+             GPtrArray *bugzilla_urls = g_ptr_array_new_with_free_func (g_free);
+             GPtrArray *cve_urls = g_ptr_array_new_with_free_func (g_free);
+             
+             for (const auto &advisory : query) {
+                  if (!update_text.empty()) update_text += "\n\n";
+                  update_text += advisory.get_description();
+                  
+                  for (const auto &ref : advisory.get_references()) {
+                       std::string url = ref.get_url();
+                       if (url.empty()) continue;
+                       
+                       // Simple heuristic
+                       if (url.find("bugzilla") != std::string::npos) g_ptr_array_add(bugzilla_urls, g_strdup(url.c_str()));
+                       else if (url.find("cve") != std::string::npos) g_ptr_array_add(cve_urls, g_strdup(url.c_str()));
+                       else g_ptr_array_add(vendor_urls, g_strdup(url.c_str()));
+                  }
+             }
+
+             g_ptr_array_add(vendor_urls, NULL);
+             g_ptr_array_add(bugzilla_urls, NULL);
+             g_ptr_array_add(cve_urls, NULL);
+             
+             std::string repo_id = pkg.get_repo_id();
+             std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+             
+             PkUpdateDetail *item = pk_update_detail_new();
+             g_object_set(item,
+                 "package-id", pid.c_str(),
+                 "updates", NULL,
+                 "obsoletes", NULL,
+                 "vendor-urls", (gchar**)vendor_urls->pdata,
+                 "bugzilla-urls", (gchar**)bugzilla_urls->pdata,
+                 "cve-urls", (gchar**)cve_urls->pdata,
+                 "restart", PK_RESTART_ENUM_NONE, 
+                 "update-text", update_text.c_str(),
+                 "changelog", NULL,
+                 "state", PK_UPDATE_STATE_ENUM_STABLE, 
+                 "issued", NULL,
+                 "updated", NULL,
+                 NULL);
+             
+             g_ptr_array_add(update_details_array, item);
+             g_ptr_array_unref(vendor_urls);
+             g_ptr_array_unref(bugzilla_urls);
+             g_ptr_array_unref(cve_urls);
+        }
+        
+        pk_backend_job_update_details(job, update_details_array);
+        g_ptr_array_unref(update_details_array);
+
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: GetUpdateDetail failed: %s", e.what());
         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
     }
     pk_backend_job_finished (job);
