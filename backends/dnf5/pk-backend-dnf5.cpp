@@ -133,6 +133,8 @@ pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
         auto repo_sack = dnf5_base->get_repo_sack();
         repo_sack->create_repos_from_system_configuration();
         repo_sack->update_and_load_enabled_repos(true);
+        // Ensure system repo is loaded
+        repo_sack->get_system_repo();
         
         g_debug ("PkBackendDnf5: libdnf5 initialized. Repos loaded: %zu", repo_sack->size());
         
@@ -370,6 +372,8 @@ pk_backend_refresh_cache (PkBackend *backend, PkBackendJob *job, gboolean force)
         }
         
         repo_sack->update_and_load_enabled_repos(true);
+        // Ensure system repo is loaded
+        repo_sack->get_system_repo();
         
     } catch (const std::exception &e) {
         g_warning ("PkBackendDnf5: Refresh cache failed: %s", e.what());
