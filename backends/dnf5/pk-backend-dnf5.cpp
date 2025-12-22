@@ -110,6 +110,7 @@ pk_backend_get_roles (PkBackend *backend)
         PK_ROLE_ENUM_REFRESH_CACHE,
         PK_ROLE_ENUM_GET_UPDATES,
         PK_ROLE_ENUM_GET_UPDATE_DETAIL,
+        PK_ROLE_ENUM_WHAT_PROVIDES,
         -1);
     return roles;
 }
@@ -871,6 +872,50 @@ pk_backend_get_update_detail (PkBackend *backend,
 
     } catch (const std::exception &e) {
         g_warning ("PkBackendDnf5: GetUpdateDetail failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_what_provides (PkBackend *backend,
+                          PkBackendJob *job,
+                          PkBitfield filters,
+                          gchar **search)
+{
+    g_debug ("PkBackendDnf5: what_provides");
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        // Decompose search terms
+        std::vector<std::string> provides;
+        for (gchar **s = search; *s != nullptr; s++) {
+             std::string term = *s;
+             // Logic from pk-backend-dnf.c:pk_backend_what_provides_decompose
+             provides.push_back(term);
+             provides.push_back("gstreamer0.10(" + term + ")");
+             provides.push_back("gstreamer1(" + term + ")");
+             provides.push_back("font(" + term + ")");
+             provides.push_back("mimehandler(" + term + ")");
+             provides.push_back("postscriptdriver(" + term + ")");
+             provides.push_back("plasma4(" + term + ")");
+             provides.push_back("plasma5(" + term + ")");
+             provides.push_back("language(" + term + ")");
+        }
+
+        libdnf5::rpm::PackageQuery query(*dnf5_base);
+        query.filter_provides(provides);
+        dnf5_apply_filters(query, filters);
+        
+        std::vector<libdnf5::rpm::Package> pkg_vector(query.begin(), query.end());
+        dnf5_sort_and_emit(job, pkg_vector);
+
+    } catch (const std::exception &e) {
         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
     }
     pk_backend_job_finished (job);
