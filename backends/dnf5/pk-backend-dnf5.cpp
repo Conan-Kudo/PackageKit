@@ -568,10 +568,29 @@ pk_backend_get_details_local (PkBackend *backend, PkBackendJob *job, gchar **fil
         // Use a temporary base to avoid polluting the global sack with local files
         libdnf5::Base local_base;
         local_base.load_config();
+        
+        // Disable GPG checks for local packages to avoid "unsupported" errors if keys missing
+        auto &config = local_base.get_config();
+        config.get_pkg_gpgcheck_option().set(false);
+        config.get_localpkg_gpgcheck_option().set(false);
+        
         local_base.setup();
         
         std::vector<std::string> file_paths;
         for (int i = 0; files[i] != NULL; i++) {
+             g_debug("Processing local file: %s", files[i]);
+             
+             // Strict file access check
+             FILE *f = fopen(files[i], "rb");
+             if (!f) {
+                 int errsv = errno;
+                 g_warning("Failed to open file %s: %s", files[i], g_strerror(errsv));
+                 pk_backend_job_error_code(job, PK_ERROR_ENUM_LOCAL_INSTALL_FAILED, "Cannot open file: %s", g_strerror(errsv));
+                 pk_backend_job_finished(job);
+                 return;
+             }
+             fclose(f);
+             
              file_paths.push_back(files[i]);
         }
         
@@ -613,6 +632,12 @@ pk_backend_get_files_local (PkBackend *backend, PkBackendJob *job, gchar **files
         // Use a temporary base
         libdnf5::Base local_base;
         local_base.load_config();
+        
+        // Disable GPG checks for local packages
+        auto &config = local_base.get_config();
+        config.get_pkg_gpgcheck_option().set(false);
+        config.get_localpkg_gpgcheck_option().set(false);
+
         local_base.setup();
         
         std::vector<std::string> file_paths;
