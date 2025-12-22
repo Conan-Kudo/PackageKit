@@ -200,6 +200,7 @@ dnf5_sort_and_emit (PkBackendJob *job, std::vector<libdnf5::rpm::Package> &pkgs)
 static void
 dnf5_apply_filters (libdnf5::rpm::PackageQuery &query, PkBitfield filters)
 {
+    g_debug("dnf5_apply_filters: filters=%" G_GUINT64_FORMAT, filters);
     // installed
     if (pk_bitfield_contain (filters, PK_FILTER_ENUM_INSTALLED)) {
         query.filter_installed();
@@ -913,6 +914,7 @@ pk_backend_what_provides (PkBackend *backend,
         dnf5_apply_filters(query, filters);
         
         std::vector<libdnf5::rpm::Package> pkg_vector(query.begin(), query.end());
+        g_debug ("WhatProvides: Found %zu packages", pkg_vector.size());
         dnf5_sort_and_emit(job, pkg_vector);
 
     } catch (const std::exception &e) {
