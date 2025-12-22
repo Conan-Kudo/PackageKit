@@ -100,9 +100,7 @@ pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
         
         // Load repositories
         auto repo_sack = dnf5_base->get_repo_sack();
-        // create_repos_from_system_configuration is usually called by setup() or load_config()?
-        // But load_repos() only loads, doesn't update if metadata is stale?
-        // Let's use update_and_load_enabled_repos which ensures metadata.
+        repo_sack->create_repos_from_system_configuration();
         repo_sack->update_and_load_enabled_repos(true);
         
         g_debug ("PkBackendDnf5: libdnf5 initialized. Repos loaded: %zu", repo_sack->size());
@@ -346,6 +344,183 @@ pk_backend_refresh_cache (PkBackend *backend, PkBackendJob *job, gboolean force)
         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
     }
     pk_backend_job_finished (job);
+}
+
+void
+pk_backend_get_repo_list (PkBackend *backend,
+              PkBackendJob *job,
+              PkBitfield filters)
+{
+    g_debug ("PkBackendDnf5: get_repo_list");
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        libdnf5::repo::RepoQuery query(*dnf5_base);
+        for (auto repo : query) {
+            bool enabled = repo->is_enabled();
+            
+            if (pk_bitfield_contain(filters, PK_FILTER_ENUM_INSTALLED) && !enabled) continue;
+            if (pk_bitfield_contain(filters, PK_FILTER_ENUM_NOT_INSTALLED) && enabled) continue;
+
+            // Filter out internal repos
+            std::string id = repo->get_id();
+            if (id == "@System" || id == "@commandline") continue;
+
+            pk_backend_job_repo_detail(job,
+                                       id.c_str(),
+                                       repo->get_name().c_str(),
+                                       enabled);
+        }
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: GetRepoList failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_get_packages (PkBackend *backend,
+             PkBackendJob *job,
+             PkBitfield filters)
+{
+    g_debug ("PkBackendDnf5: get_packages");
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        libdnf5::rpm::PackageQuery query(*dnf5_base);
+        dnf5_apply_filters(query, filters);
+        
+        std::vector<libdnf5::rpm::Package> pkgs;
+        for (auto pkg : query) pkgs.push_back(pkg);
+        dnf5_sort_and_emit(job, pkgs);
+        
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: GetPackages failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+static std::vector<libdnf5::rpm::Package>
+dnf5_resolve_package_ids(gchar **package_ids)
+{
+    std::vector<libdnf5::rpm::Package> pkgs;
+    if (!package_ids) return pkgs;
+    
+    for (int i = 0; package_ids[i] != NULL; i++) {
+        gchar **split = pk_package_id_split(package_ids[i]);
+        if (!split) continue;
+        
+        const char *name = split[PK_PACKAGE_ID_NAME];
+        const char *version = split[PK_PACKAGE_ID_VERSION];
+        const char *arch = split[PK_PACKAGE_ID_ARCH];
+        const char *repo_id = split[PK_PACKAGE_ID_DATA];
+        
+        try {
+            libdnf5::rpm::PackageQuery query(*dnf5_base);
+            query.filter_name(name);
+            query.filter_evr(version);
+            query.filter_arch(arch);
+            
+            if (g_strcmp0(repo_id, "installed") == 0) {
+                query.filter_installed();
+            } else {
+                 query.filter_repo_id(repo_id);
+            }
+            
+            for (auto pkg : query) {
+                pkgs.push_back(pkg);
+                break;
+            }
+        } catch (...) {}
+        
+        g_strfreev(split);
+    }
+    return pkgs;
+}
+
+void
+pk_backend_get_details (PkBackend *backend, PkBackendJob *job, gchar **package_ids)
+{
+    g_debug ("PkBackendDnf5: get_details");
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+        
+        auto pkgs = dnf5_resolve_package_ids(package_ids);
+        for (auto &pkg : pkgs) {
+             std::string repo_id = pkg.get_repo_id();
+             if (pkg.get_install_time() > 0) repo_id = "installed";
+             
+             std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+             
+             std::string license = pkg.get_license();
+             if (license.empty()) license = "unknown";
+             
+             pk_backend_job_details(job,
+                 pid.c_str(),
+                 pkg.get_summary().c_str(),
+                 license.c_str(),
+                 PK_GROUP_ENUM_UNKNOWN,
+                 pkg.get_description().c_str(),
+                 pkg.get_url().c_str(),
+                 pkg.get_install_size(),
+                 pkg.get_download_size());
+        }
+        
+    } catch (const std::exception &e) {
+         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_get_files (PkBackend *backend, PkBackendJob *job, gchar **package_ids)
+{
+    g_debug ("PkBackendDnf5: get_files");
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        auto pkgs = dnf5_resolve_package_ids(package_ids);
+        for (auto &pkg : pkgs) {
+             std::string repo_id = pkg.get_repo_id();
+             if (pkg.get_install_time() > 0) repo_id = "installed";
+             std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+             
+             auto files_vec = pkg.get_files();
+             std::vector<char*> files_c_str;
+             for (const auto &f : files_vec) {
+                 files_c_str.push_back(const_cast<char*>(f.c_str()));
+             }
+             files_c_str.push_back(nullptr);
+             
+             pk_backend_job_files(job, pid.c_str(), files_c_str.data());
+        }
+
+    } catch (const std::exception &e) {
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+
 }
 
 }
