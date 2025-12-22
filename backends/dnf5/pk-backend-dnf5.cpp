@@ -84,6 +84,30 @@ pk_backend_supports_parallelization (PkBackend *backend)
     return TRUE;
 }
 
+gchar **
+pk_backend_get_mime_types (PkBackend *backend)
+{
+    const gchar *mime_types[] = { "application/x-rpm", NULL };
+    return g_strdupv ((gchar **) mime_types);
+}
+
+PkBitfield
+pk_backend_get_roles (PkBackend *backend)
+{
+    PkBitfield roles;
+    roles = pk_bitfield_from_enums (
+        PK_ROLE_ENUM_GET_DETAILS,
+        PK_ROLE_ENUM_GET_DETAILS_LOCAL,
+        PK_ROLE_ENUM_GET_FILES,
+        PK_ROLE_ENUM_GET_FILES_LOCAL,
+        PK_ROLE_ENUM_GET_PACKAGES,
+        PK_ROLE_ENUM_GET_REPO_LIST,
+        PK_ROLE_ENUM_RESOLVE,
+        PK_ROLE_ENUM_REFRESH_CACHE,
+        -1);
+    return roles;
+}
+
 void
 pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
 {
@@ -578,19 +602,6 @@ pk_backend_get_details_local (PkBackend *backend, PkBackendJob *job, gchar **fil
         
         std::vector<std::string> file_paths;
         for (int i = 0; files[i] != NULL; i++) {
-             g_debug("Processing local file: %s", files[i]);
-             
-             // Strict file access check
-             FILE *f = fopen(files[i], "rb");
-             if (!f) {
-                 int errsv = errno;
-                 g_warning("Failed to open file %s: %s", files[i], g_strerror(errsv));
-                 pk_backend_job_error_code(job, PK_ERROR_ENUM_LOCAL_INSTALL_FAILED, "Cannot open file: %s", g_strerror(errsv));
-                 pk_backend_job_finished(job);
-                 return;
-             }
-             fclose(f);
-             
              file_paths.push_back(files[i]);
         }
         
