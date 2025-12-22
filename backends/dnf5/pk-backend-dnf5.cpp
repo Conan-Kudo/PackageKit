@@ -26,6 +26,7 @@
 #include <libdnf5/rpm/package_query.hpp>
 #include <libdnf5/repo/repo_query.hpp>
 #include <libdnf5/rpm/arch.hpp>
+#include <libdnf5/repo/package_downloader.hpp>
 #include <algorithm>
 #include <vector>
 #include <set>
@@ -96,6 +97,7 @@ pk_backend_get_roles (PkBackend *backend)
 {
     PkBitfield roles;
     roles = pk_bitfield_from_enums (
+        PK_ROLE_ENUM_DOWNLOAD_PACKAGES,
         PK_ROLE_ENUM_GET_DETAILS,
         PK_ROLE_ENUM_GET_DETAILS_LOCAL,
         PK_ROLE_ENUM_GET_FILES,
@@ -674,6 +676,61 @@ pk_backend_get_files_local (PkBackend *backend, PkBackendJob *job, gchar **files
              
              pk_backend_job_files(job, pid.c_str(), files_c_str.data());
         }
+
+    } catch (const std::exception &e) {
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_download_packages (PkBackend *backend,
+                              PkBackendJob *job,
+                              gchar **package_ids,
+                              const gchar *directory)
+{
+    g_debug ("PkBackendDnf5: download_packages to %s", directory);
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        auto pkgs = dnf5_resolve_package_ids(package_ids);
+        // Use PackageDownloader
+        libdnf5::repo::PackageDownloader downloader(*dnf5_base);
+        std::vector<std::string> downloaded_paths;
+        
+        for (auto &pkg : pkgs) {
+             std::string repo_id = pkg.get_repo_id();
+             if (pkg.get_install_time() > 0) repo_id = "installed";
+             std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+
+             pk_backend_job_package(job, PK_INFO_ENUM_DOWNLOADING, pid.c_str(), pkg.get_summary().c_str());
+
+             if (repo_id == "installed") continue; // Skip installed
+             
+             // Add to downloader
+             downloader.add(pkg, directory);
+             
+             // Predict path for reporting
+             std::string filename = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch() + ".rpm";
+             std::string target_path = std::string(directory) + "/" + filename;
+             downloaded_paths.push_back(target_path);
+        }
+        
+        // Perform download
+        downloader.download();
+        
+        std::vector<char*> files_c_str;
+        for (const auto &p : downloaded_paths) {
+            files_c_str.push_back(const_cast<char*>(p.c_str()));
+        }
+        files_c_str.push_back(nullptr);
+        
+        pk_backend_job_files(job, NULL, files_c_str.data());
 
     } catch (const std::exception &e) {
         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
