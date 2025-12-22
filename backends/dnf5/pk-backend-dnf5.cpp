@@ -523,4 +523,41 @@ pk_backend_get_files (PkBackend *backend, PkBackendJob *job, gchar **package_ids
 
 }
 
+void
+pk_backend_resolve (PkBackend *backend,
+             PkBackendJob *job,
+             PkBitfield filters,
+             gchar **package_ids)
+{
+    g_debug ("PkBackendDnf5: resolve");
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        libdnf5::rpm::PackageQuery query(*dnf5_base);
+        dnf5_apply_filters(query, filters);
+        
+        std::vector<std::string> names;
+        for (int i = 0; package_ids[i] != NULL; i++) {
+            names.push_back(package_ids[i]);
+        }
+        
+        // Exact match
+        query.filter_name(names, libdnf5::sack::QueryCmp::EQ);
+        
+        std::vector<libdnf5::rpm::Package> pkgs;
+        for (auto pkg : query) pkgs.push_back(pkg);
+        dnf5_sort_and_emit(job, pkgs);
+        
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: Resolve failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
 }
