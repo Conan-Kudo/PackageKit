@@ -560,4 +560,89 @@ pk_backend_resolve (PkBackend *backend,
     pk_backend_job_finished (job);
 }
 
+void
+pk_backend_get_details_local (PkBackend *backend, PkBackendJob *job, gchar **files)
+{
+    g_debug ("PkBackendDnf5: get_details_local");
+    try {
+        // Use a temporary base to avoid polluting the global sack with local files
+        libdnf5::Base local_base;
+        local_base.load_config();
+        local_base.setup();
+        
+        std::vector<std::string> file_paths;
+        for (int i = 0; files[i] != NULL; i++) {
+             file_paths.push_back(files[i]);
+        }
+        
+        auto added_pkgs = local_base.get_repo_sack()->add_cmdline_packages(file_paths);
+        
+        for (const auto &pair : added_pkgs) {
+            const auto &pkg = pair.second;
+             // For local packages, repo_id is empty or @commandline?
+             std::string repo_id = pkg.get_repo_id();
+             if (repo_id.empty()) repo_id = "unknown"; 
+
+             std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+             
+             std::string license = pkg.get_license();
+             if (license.empty()) license = "unknown";
+             
+             pk_backend_job_details(job,
+                 pid.c_str(),
+                 pkg.get_summary().c_str(),
+                 license.c_str(),
+                 PK_GROUP_ENUM_UNKNOWN,
+                 pkg.get_description().c_str(),
+                 pkg.get_url().c_str(),
+                 pkg.get_install_size(),
+                 0); // Download size 0 for local files
+        }
+
+    } catch (const std::exception &e) {
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_get_files_local (PkBackend *backend, PkBackendJob *job, gchar **files)
+{
+    g_debug ("PkBackendDnf5: get_files_local");
+    try {
+        // Use a temporary base
+        libdnf5::Base local_base;
+        local_base.load_config();
+        local_base.setup();
+        
+        std::vector<std::string> file_paths;
+        for (int i = 0; files[i] != NULL; i++) {
+             file_paths.push_back(files[i]);
+        }
+        
+        auto added_pkgs = local_base.get_repo_sack()->add_cmdline_packages(file_paths);
+
+        for (const auto &pair : added_pkgs) {
+            const auto &pkg = pair.second;
+             std::string repo_id = pkg.get_repo_id();
+             if (repo_id.empty()) repo_id = "unknown";
+
+             std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+             
+             auto files_vec = pkg.get_files();
+             std::vector<char*> files_c_str;
+             for (const auto &f : files_vec) {
+                 files_c_str.push_back(const_cast<char*>(f.c_str()));
+             }
+             files_c_str.push_back(nullptr);
+             
+             pk_backend_job_files(job, pid.c_str(), files_c_str.data());
+        }
+
+    } catch (const std::exception &e) {
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
 }
