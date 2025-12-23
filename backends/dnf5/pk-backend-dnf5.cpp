@@ -132,9 +132,9 @@ pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
         // Load repositories
         auto repo_sack = dnf5_base->get_repo_sack();
         repo_sack->create_repos_from_system_configuration();
-        repo_sack->update_and_load_enabled_repos(true);
-        // Ensure system repo is loaded
+        // Ensure system repo is created before loading
         repo_sack->get_system_repo();
+        repo_sack->load_repos();
         
         g_debug ("PkBackendDnf5: libdnf5 initialized. Repos loaded: %zu", repo_sack->size());
         
@@ -203,12 +203,16 @@ static void
 dnf5_apply_filters (libdnf5::rpm::PackageQuery &query, PkBitfield filters)
 {
     g_debug("dnf5_apply_filters: filters=%" G_GUINT64_FORMAT, filters);
-    // installed
-    if (pk_bitfield_contain (filters, PK_FILTER_ENUM_INSTALLED)) {
+    // installed / available filter
+    gboolean installed = pk_bitfield_contain (filters, PK_FILTER_ENUM_INSTALLED);
+    gboolean available = pk_bitfield_contain (filters, PK_FILTER_ENUM_NOT_INSTALLED);
+
+    if (installed && !available) {
         query.filter_installed();
-    } else if (pk_bitfield_contain (filters, PK_FILTER_ENUM_NOT_INSTALLED)) {
+    } else if (!installed && available) {
         query.filter_available();
     }
+    // If both are true, or both are false, we do nothing and search all.
 
     // arch
     if (pk_bitfield_contain (filters, PK_FILTER_ENUM_ARCH)) {
@@ -371,9 +375,9 @@ pk_backend_refresh_cache (PkBackend *backend, PkBackendJob *job, gboolean force)
             }
         }
         
-        repo_sack->update_and_load_enabled_repos(true);
-        // Ensure system repo is loaded
+        // Ensure system repo is created before loading
         repo_sack->get_system_repo();
+        repo_sack->load_repos();
         
     } catch (const std::exception &e) {
         g_warning ("PkBackendDnf5: Refresh cache failed: %s", e.what());
