@@ -32,6 +32,8 @@
 #include <libdnf5/advisory/advisory_query.hpp>
 #include <libdnf5/rpm/reldep_list.hpp>
 #include <libdnf5/base/transaction.hpp>
+#include <rpm/rpmlib.h>
+#include <glib/gstdio.h>
 #include <algorithm>
 #include <vector>
 #include <set>
@@ -842,18 +844,72 @@ pk_backend_get_roles (PkBackend *backend)
 		-1);
 }
 
+static void
+remove_old_cache_directories (PkBackend *backend, const gchar *release_ver)
+{
+	PkBackendDnf5Private *priv = (PkBackendDnf5Private *) pk_backend_get_user_data (backend);
+	g_assert (priv->conf != NULL);
+
+	/* cache cleanup disabled? */
+	if (g_key_file_get_boolean (priv->conf, "Daemon", "KeepCache", NULL)) {
+		g_debug ("KeepCache config option set; skipping old cache directory cleanup");
+		return;
+	}
+
+	/* only do cache cleanup for regular installs */
+	g_autofree gchar *destdir = g_key_file_get_string (priv->conf, "Daemon", "DestDir", NULL);
+	if (destdir != NULL) {
+		g_debug ("DestDir config option set; skipping old cache directory cleanup");
+		return;
+	}
+
+	std::filesystem::path cache_path("/var/cache/PackageKit");
+	if (!std::filesystem::exists(cache_path) || !std::filesystem::is_directory(cache_path))
+		return;
+
+	/* look at each subdirectory */
+	for (const auto &entry : std::filesystem::directory_iterator(cache_path)) {
+		if (!entry.is_directory())
+			continue;
+
+		std::string filename = entry.path().filename().string();
+
+		/* is the version older than the current release ver? */
+		if (rpmvercmp (filename.c_str(), release_ver) < 0) {
+			g_debug ("removing old cache directory %s", entry.path().c_str());
+			std::error_code ec;
+			std::filesystem::remove_all(entry.path(), ec);
+			if (ec)
+				g_warning ("failed to remove directory %s: %s", entry.path().c_str(), ec.message().c_str());
+		}
+	}
+}
+
 void
 pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
 {
+	g_autofree gchar *release_ver = NULL;
+	g_autoptr(GError) error = NULL;
+
 	PkBackendDnf5Private *priv = g_new0 (PkBackendDnf5Private, 1);
 	g_mutex_init (&priv->mutex);
 	priv->conf = g_key_file_ref (conf);
+
+	pk_backend_set_user_data (backend, priv);
+
+	release_ver = pk_get_distro_version_id (&error);
+	if (release_ver == NULL) {
+		g_warning ("Failed to parse os-release: %s", error->message);
+	} else {
+		/* clean up any cache directories left over from a distro upgrade */
+		remove_old_cache_directories (backend, release_ver);
+	}
+
 	try {
 		dnf5_setup_base (priv);
 	} catch (const std::exception &e) {
 		g_warning ("Init failed: %s", e.what());
 	}
-	pk_backend_set_user_data (backend, priv);
 }
 
 void
