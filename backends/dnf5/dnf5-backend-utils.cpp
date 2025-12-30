@@ -427,6 +427,8 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			g_auto(GStrv) values = NULL;
 			g_variant_get (params, "(t^as)", &filters, &values);
 			
+			g_debug("Query role=%d, filters=%lu", role, (unsigned long)filters);
+			
 			std::vector<libdnf5::rpm::Package> results;
 			libdnf5::rpm::PackageQuery query(*priv->base);
 			
@@ -443,6 +445,7 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				for (const auto &term : search_terms)
 					g_debug("Resolving package name: %s", term.c_str());
 				query.filter_name(search_terms, libdnf5::sack::QueryCmp::EQ);
+				g_debug("After filter_name: query has %zu packages", query.size());
 			} else if (role == PK_ROLE_ENUM_WHAT_PROVIDES) {
 				std::vector<std::string> provides;
 				for (const auto &term : search_terms) {
@@ -473,14 +476,18 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			// Apply filters AFTER filtering by name/file/provides for most roles
 			// Exception: SEARCH_DETAILS already applied filters above
 			if (role != PK_ROLE_ENUM_SEARCH_DETAILS) {
+				g_debug("Before dnf5_apply_filters: query has %zu packages", query.size());
 				dnf5_apply_filters(*priv->base, query, filters);
+				g_debug("After dnf5_apply_filters: query has %zu packages", query.size());
 			}
 			
 			for (auto p : query) {
 				if (dnf5_package_filter(p, filters))
 					results.push_back(p);
 			}
+			g_debug("Final results: %zu packages", results.size());
 			dnf5_sort_and_emit(job, results);
+
 			
 		} else if (role == PK_ROLE_ENUM_DEPENDS_ON || role == PK_ROLE_ENUM_REQUIRED_BY) {
 			PkBitfield filters;
