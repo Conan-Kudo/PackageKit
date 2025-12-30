@@ -1253,6 +1253,10 @@ pk_backend_install_packages (PkBackend *backend,
             return;
         }
 
+        // Download packages
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
+        transaction.download();
+
         // Run the transaction
         pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
         transaction.run();
@@ -1337,6 +1341,10 @@ pk_backend_install_files (PkBackend *backend,
             pk_backend_job_finished (job);
             return;
         }
+
+        // Download packages
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
+        transaction.download();
 
         // Run the transaction
         pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
