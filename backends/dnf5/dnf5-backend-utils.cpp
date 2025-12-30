@@ -749,7 +749,7 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			PkBitfield transaction_flags;
 			g_variant_get (params, "(t&su)", &transaction_flags, &distro_id, &upgrade_kind);
 			if (distro_id)
-				dnf5_setup_base(priv, FALSE, FALSE, distro_id);
+				dnf5_setup_base(priv, TRUE, FALSE, distro_id);
 		}
 
 		libdnf5::Goal goal(*priv->base);
