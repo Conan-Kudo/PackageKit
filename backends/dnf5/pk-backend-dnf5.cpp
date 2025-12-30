@@ -1253,6 +1253,48 @@ pk_backend_install_packages (PkBackend *backend,
             return;
         }
 
+        // Check for simulation
+        if (pk_bitfield_contain(transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
+             auto transaction_items = transaction.get_transaction_packages();
+             for (const auto &item : transaction_items) {
+                 auto action = item.get_action();
+                 PkInfoEnum info = PK_INFO_ENUM_UNKNOWN;
+                 
+                 switch (action) {
+                     case libdnf5::transaction::TransactionItemAction::INSTALL:
+                         info = PK_INFO_ENUM_INSTALLING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::UPGRADE:
+                         info = PK_INFO_ENUM_UPDATING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::DOWNGRADE:
+                         info = PK_INFO_ENUM_DOWNGRADING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::REINSTALL:
+                         info = PK_INFO_ENUM_REINSTALLING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::REMOVE:
+                         info = PK_INFO_ENUM_REMOVING;
+                         break;
+                     default:
+                         continue;
+                 }
+
+                 auto pkg = item.get_package();
+                 std::string repo_id = pkg.get_repo_id();
+                 // Create package ID with "installed" data if action is remove/reinstall
+                 if (action == libdnf5::transaction::TransactionItemAction::REMOVE || 
+                     action == libdnf5::transaction::TransactionItemAction::REINSTALL) {
+                     repo_id = "installed";
+                 }
+                 
+                 std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+                 pk_backend_job_package(job, info, pid.c_str(), pkg.get_summary().c_str());
+             }
+             pk_backend_job_finished(job);
+             return;
+        }
+
         // Download packages
         pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
         transaction.download();
@@ -1340,6 +1382,49 @@ pk_backend_install_files (PkBackend *backend,
                                       "Dependency resolution failed: %s", problem_msg.c_str());
             pk_backend_job_finished (job);
             return;
+        }
+
+
+        // Check for simulation
+        if (pk_bitfield_contain(transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
+             auto transaction_items = transaction.get_transaction_packages();
+             for (const auto &item : transaction_items) {
+                 auto action = item.get_action();
+                 PkInfoEnum info = PK_INFO_ENUM_UNKNOWN;
+                 
+                 switch (action) {
+                     case libdnf5::transaction::TransactionItemAction::INSTALL:
+                         info = PK_INFO_ENUM_INSTALLING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::UPGRADE:
+                         info = PK_INFO_ENUM_UPDATING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::DOWNGRADE:
+                         info = PK_INFO_ENUM_DOWNGRADING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::REINSTALL:
+                         info = PK_INFO_ENUM_REINSTALLING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::REMOVE:
+                         info = PK_INFO_ENUM_REMOVING;
+                         break;
+                     default:
+                         continue;
+                 }
+
+                 auto pkg = item.get_package();
+                 std::string repo_id = pkg.get_repo_id();
+                 // Create package ID with "installed" data if action is remove/reinstall
+                 if (action == libdnf5::transaction::TransactionItemAction::REMOVE || 
+                     action == libdnf5::transaction::TransactionItemAction::REINSTALL) {
+                     repo_id = "installed";
+                 }
+                 
+                 std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+                 pk_backend_job_package(job, info, pid.c_str(), pkg.get_summary().c_str());
+             }
+             pk_backend_job_finished(job);
+             return;
         }
 
         // Download packages
