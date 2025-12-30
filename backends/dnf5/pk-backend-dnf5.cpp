@@ -109,6 +109,8 @@ pk_backend_get_roles (PkBackend *backend)
         PK_ROLE_ENUM_GET_FILES_LOCAL,
         PK_ROLE_ENUM_GET_PACKAGES,
         PK_ROLE_ENUM_GET_REPO_LIST,
+        PK_ROLE_ENUM_INSTALL_FILES,
+        PK_ROLE_ENUM_INSTALL_PACKAGES,
         PK_ROLE_ENUM_REQUIRED_BY,
         PK_ROLE_ENUM_RESOLVE,
         PK_ROLE_ENUM_REFRESH_CACHE,
@@ -1128,6 +1130,220 @@ pk_backend_required_by (PkBackend *backend, PkBackendJob *job, PkBitfield filter
         
     } catch (const std::exception &e) {
         g_warning ("PkBackendDnf5: RequiredBy failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_install_packages (PkBackend *backend,
+                             PkBackendJob *job,
+                             PkBitfield transaction_flags,
+                             gchar **package_ids)
+{
+    g_debug ("PkBackendDnf5: install_packages");
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_QUERY);
+
+        // Resolve package IDs
+        auto pkgs = dnf5_resolve_package_ids(package_ids);
+        if (pkgs.empty()) {
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_FOUND, "Failed to find packages");
+            pk_backend_job_finished (job);
+            return;
+        }
+
+        // Check installed status and handle transaction flags
+        for (size_t i = 0; i < pkgs.size(); i++) {
+            auto &pkg = pkgs[i];
+            gchar **split = pk_package_id_split(package_ids[i]);
+            if (!split) continue;
+
+            const char *name = split[PK_PACKAGE_ID_NAME];
+            const char *arch = split[PK_PACKAGE_ID_ARCH];
+
+            // Check if any version is installed
+            libdnf5::rpm::PackageQuery installed_query(*dnf5_base);
+            installed_query.filter_name(name);
+            installed_query.filter_arch(arch);
+            installed_query.filter_installed();
+
+            bool same_version_installed = false;
+            bool higher_version_installed = false;
+            std::string installed_evr;
+
+            for (const auto &inst_pkg : installed_query) {
+                installed_evr = inst_pkg.get_evr();
+                // Compare EVR using rpmvercmp
+                int cmp = libdnf5::rpm::rpmvercmp(inst_pkg.get_evr().c_str(), pkg.get_evr().c_str());
+                
+                if (cmp == 0) {
+                    same_version_installed = true;
+                    break;
+                } else if (cmp > 0) {
+                    higher_version_installed = true;
+                    installed_evr = inst_pkg.get_evr();
+                }
+            }
+
+            // Handle same version - reinstall
+            if (same_version_installed &&
+                !pk_bitfield_contain(transaction_flags, PK_TRANSACTION_FLAG_ENUM_ALLOW_REINSTALL)) {
+                g_autofree gchar *printable = pk_package_id_to_printable(package_ids[i]);
+                pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_ALREADY_INSTALLED,
+                                          "%s is already installed", printable);
+                g_strfreev(split);
+                pk_backend_job_finished (job);
+                return;
+            }
+
+            // Handle higher version installed - downgrade
+            if (higher_version_installed &&
+                !pk_bitfield_contain(transaction_flags, PK_TRANSACTION_FLAG_ENUM_ALLOW_DOWNGRADE)) {
+                pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_ALREADY_INSTALLED,
+                                          "higher version \"%s\" of package %s.%s is already installed",
+                                          installed_evr.c_str(), name, arch);
+                g_strfreev(split);
+                pk_backend_job_finished (job);
+                return;
+            }
+
+            // Handle JUST_REINSTALL - reject upgrades/downgrades
+            if ((higher_version_installed || (!same_version_installed && !installed_query.empty())) &&
+                pk_bitfield_contain(transaction_flags, PK_TRANSACTION_FLAG_ENUM_JUST_REINSTALL)) {
+                pk_backend_job_error_code (job, PK_ERROR_ENUM_NOT_AUTHORIZED,
+                                          "missing authorization to update or downgrade software");
+                g_strfreev(split);
+                pk_backend_job_finished (job);
+                return;
+            }
+
+            g_strfreev(split);
+        }
+
+        // Create goal and add packages using spec strings
+        libdnf5::Goal goal(*dnf5_base);
+        for (auto &pkg : pkgs) {
+            // Create NEVRA spec string for add_install
+            std::string spec = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch();
+            goal.add_install(spec);
+        }
+
+        // Resolve transaction
+        auto transaction = goal.resolve();
+
+        // Check for transaction problems using get_problems()
+        auto problems = transaction.get_transaction_problems();
+        if (!problems.empty()) {
+            std::string problem_msg;
+            for (const auto &p : problems) {
+                if (!problem_msg.empty()) problem_msg += "; ";
+                problem_msg += p;
+            }
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_DEP_RESOLUTION_FAILED, 
+                                      "Dependency resolution failed: %s", problem_msg.c_str());
+            pk_backend_job_finished (job);
+            return;
+        }
+
+        // Run the transaction
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
+        transaction.run();
+
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: InstallPackages failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_install_files (PkBackend *backend,
+                          PkBackendJob *job,
+                          PkBitfield transaction_flags,
+                          gchar **full_paths)
+{
+    g_debug ("PkBackendDnf5: install_files");
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_QUERY);
+
+        // Convert file paths to vector
+        std::vector<std::string> file_paths;
+        for (int i = 0; full_paths[i] != NULL; i++) {
+            file_paths.push_back(full_paths[i]);
+        }
+
+        if (file_paths.empty()) {
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_FILE_NOT_FOUND, "No files provided");
+            pk_backend_job_finished (job);
+            return;
+        }
+
+        // Add command-line packages (local RPM files)
+        auto repo_sack = dnf5_base->get_repo_sack();
+        std::map<std::string, libdnf5::rpm::Package> added_pkgs;
+        
+        try {
+            added_pkgs = repo_sack->add_cmdline_packages(file_paths);
+        } catch (const std::exception &e) {
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_FILE_NOT_FOUND, 
+                                      "Failed to open RPM files: %s", e.what());
+            pk_backend_job_finished (job);
+            return;
+        }
+
+        if (added_pkgs.empty()) {
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_FILE_NOT_FOUND, "Failed to add any packages");
+            pk_backend_job_finished (job);
+            return;
+        }
+
+        // Create goal and add packages for installation using spec strings
+        libdnf5::Goal goal(*dnf5_base);
+        for (const auto &pair : added_pkgs) {
+            const auto &pkg = pair.second;
+            // Create NEVRA spec string for add_install
+            std::string spec = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch();
+            goal.add_install(spec);
+        }
+
+        // Resolve transaction
+        auto transaction = goal.resolve();
+
+        // Check for transaction problems using get_problems()
+        auto problems = transaction.get_transaction_problems();
+        if (!problems.empty()) {
+            std::string problem_msg;
+            for (const auto &p : problems) {
+                if (!problem_msg.empty()) problem_msg += "; ";
+                problem_msg += p;
+            }
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_DEP_RESOLUTION_FAILED, 
+                                      "Dependency resolution failed: %s", problem_msg.c_str());
+            pk_backend_job_finished (job);
+            return;
+        }
+
+        // Run the transaction
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
+        transaction.run();
+
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: InstallFiles failed: %s", e.what());
         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
     }
     pk_backend_job_finished (job);
