@@ -39,6 +39,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <filesystem>
 
 #include <glib.h>
 
@@ -113,7 +114,8 @@ pk_backend_get_roles (PkBackend *backend)
         PK_ROLE_ENUM_INSTALL_PACKAGES,
         PK_ROLE_ENUM_REMOVE_PACKAGES,
         PK_ROLE_ENUM_UPDATE_PACKAGES,
-        PK_ROLE_ENUM_UPDATE_PACKAGES,
+        PK_ROLE_ENUM_REPAIR_SYSTEM,
+        PK_ROLE_ENUM_UPGRADE_SYSTEM,
         PK_ROLE_ENUM_REPO_ENABLE,
         PK_ROLE_ENUM_REPO_SET_DATA,
         PK_ROLE_ENUM_REPO_REMOVE,
@@ -1942,6 +1944,110 @@ pk_backend_update_packages (PkBackend *backend,
     } catch (const std::exception &e) {
         g_warning ("PkBackendDnf5: UpdatePackages failed: %s", e.what());
         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_repair_system (PkBackend *backend,
+                          PkBackendJob *job,
+                          PkBitfield transaction_flags)
+{
+    g_debug ("PkBackendDnf5: repair_system");
+    try {
+        if (pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
+        
+        // Remove /var/lib/rpm/__db.*
+        std::filesystem::path rpm_db_path("/var/lib/rpm");
+        if (std::filesystem::exists(rpm_db_path) && std::filesystem::is_directory(rpm_db_path)) {
+            for (const auto& entry : std::filesystem::directory_iterator(rpm_db_path)) {
+                if (entry.is_regular_file()) {
+                     std::string filename = entry.path().filename().string();
+                     if (filename.rfind("__db.", 0) == 0) { // starts with __db.
+                          g_debug ("Removing %s", entry.path().c_str());
+                          std::filesystem::remove(entry.path());
+                     }
+                }
+            }
+        }
+    } catch (const std::exception &e) {
+         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_upgrade_system (PkBackend *backend,
+                           PkBackendJob *job,
+                           PkBitfield transaction_flags,
+                           const gchar *distro_id,
+                           PkUpgradeKindEnum upgrade_kind)
+{
+    g_debug ("PkBackendDnf5: upgrade_system distro_id=%s", distro_id);
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        
+        // Create a new base for the upgrade context
+        auto upgrade_base = std::make_unique<libdnf5::Base>();
+        upgrade_base->load_config();
+        
+        // Set releasever if provided
+        if (distro_id) {
+            upgrade_base->get_vars()->set("releasever", distro_id);
+        }
+        
+        upgrade_base->setup();
+        
+        // Load repositories
+        auto repo_sack = upgrade_base->get_repo_sack();
+        repo_sack->create_repos_from_system_configuration();
+        repo_sack->get_system_repo();
+        repo_sack->load_repos();
+        
+        // Create distrosync goal
+        libdnf5::Goal goal(*upgrade_base);
+        // Distro sync all packages (equivalent to hy_goal_distupgrade_all)
+        goal.add_rpm_distro_sync();
+        
+        // Resolve transaction
+        auto transaction = goal.resolve();
+        
+        // Check for transaction problems
+        auto problems = transaction.get_transaction_problems();
+        if (!problems.empty()) {
+             std::string problem_msg;
+             for (const auto &p : problems) {
+                 if (!problem_msg.empty()) problem_msg += "; ";
+                 problem_msg += p;
+             }
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_DEP_RESOLUTION_FAILED, 
+                                       "Dependency resolution failed: %s", problem_msg.c_str());
+             pk_backend_job_finished (job);
+             return;
+        }
+        
+        if (pk_bitfield_contain(transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
+             // Just finish if simulation, or maybe emit packages? 
+             // Old backend just returned.
+             pk_backend_job_finished(job);
+             return;
+        }
+
+        // Download packages
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
+        transaction.download();
+        
+        // Run transaction
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
+        transaction.run();
+
+    } catch (const std::exception &e) {
+         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
     }
     pk_backend_job_finished (job);
 }
