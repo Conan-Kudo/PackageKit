@@ -361,12 +361,19 @@ dnf5_resolve_package_ids(libdnf5::Base &base, gchar **package_ids)
 				 query.filter_repo_id(split[PK_PACKAGE_ID_DATA]);
 			}
 			
+			if (query.empty()) {
+				g_debug("No exact match for ID: %s. Listing similar packages...", package_ids[i]);
+				libdnf5::rpm::PackageQuery fallback(base);
+				fallback.filter_name(split[PK_PACKAGE_ID_NAME]);
+				for (const auto &p : fallback) {
+					g_debug("Found similar package: name=%s, evr=%s, arch=%s, repo=%s",
+						p.get_name().c_str(), p.get_evr().c_str(), p.get_arch().c_str(), p.get_repo_id().c_str());
+				}
+			}
+
 			for (auto pkg : query) {
 				pkgs.push_back(pkg);
 				break;
-			}
-			if (query.empty()) {
-				g_debug("No package found for ID: %s", package_ids[i]);
 			}
 		} catch (const std::exception &e) {
 			g_debug("Exception resolving package ID %s: %s", package_ids[i], e.what());
