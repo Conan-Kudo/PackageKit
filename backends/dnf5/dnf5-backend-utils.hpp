@@ -62,19 +62,30 @@ void dnf5_remove_old_cache_directories(PkBackend *backend, const gchar *release_
 
 class Dnf5DownloadCallbacks : public libdnf5::repo::DownloadCallbacks {
 public:
-	explicit Dnf5DownloadCallbacks(PkBackendJob *job);
+	explicit Dnf5DownloadCallbacks(PkBackendJob *job, uint64_t total_size = 0);
+	void * add_new_download(void *user_data, const char *description, double total_to_download) override;
 	int progress(void *user_cb_data, double total_to_download, double downloaded) override;
+	int end(void *user_cb_data, TransferStatus status, const char *msg) override;
 private:
 	PkBackendJob *job;
+	uint64_t total_size;
+	double finished_size;
+	std::map<void*, double> item_progress;
+	std::mutex mutex;
+	uint64_t next_id;
 };
 
 class Dnf5TransactionCallbacks : public libdnf5::rpm::TransactionCallbacks {
 public:
 	explicit Dnf5TransactionCallbacks(PkBackendJob *job);
+	void before_begin(uint64_t total) override;
+	void elem_progress(const libdnf5::base::TransactionPackage &item, uint64_t amount, uint64_t total) override;
 	void install_progress(const libdnf5::base::TransactionPackage &item, uint64_t amount, uint64_t total) override;
 	void install_start(const libdnf5::base::TransactionPackage &item, uint64_t total) override;
 	void uninstall_progress(const libdnf5::base::TransactionPackage &item, uint64_t amount, uint64_t total) override;
 	void uninstall_start(const libdnf5::base::TransactionPackage &item, uint64_t total) override;
 private:
 	PkBackendJob *job;
+	uint64_t total_items;
+	uint64_t current_item_index;
 };

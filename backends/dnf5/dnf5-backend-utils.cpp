@@ -481,7 +481,10 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				g_variant_get (params, "(^as&s)", &package_ids, &directory);
 				auto pkgs = dnf5_resolve_package_ids(*priv->base, package_ids);
 				libdnf5::repo::PackageDownloader downloader(*priv->base);
-				priv->base->set_download_callbacks(std::make_unique<Dnf5DownloadCallbacks>(job));
+				uint64_t total_download_size = 0;
+				for (const auto &pkg : pkgs) total_download_size += pkg.get_download_size();
+				
+				priv->base->set_download_callbacks(std::make_unique<Dnf5DownloadCallbacks>(job, total_download_size));
 				for (auto &pkg : pkgs) {
 					dnf5_emit_pkg(job, pkg, PK_INFO_ENUM_DOWNLOADING);
 					downloader.add(pkg, directory);
@@ -728,7 +731,18 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 		}
 		
 		pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
-		priv->base->set_download_callbacks(std::make_unique<Dnf5DownloadCallbacks>(job));
+		
+		uint64_t total_download_size = 0;
+		for (const auto &item : trans.get_transaction_packages()) {
+			if (libdnf5::transaction::transaction_item_action_is_inbound(item.get_action())) {
+				auto pkg = item.get_package();
+				if (!pkg.is_available_locally()) {
+					total_download_size += pkg.get_download_size();
+				}
+			}
+		}
+		
+		priv->base->set_download_callbacks(std::make_unique<Dnf5DownloadCallbacks>(job, total_download_size));
 		trans.download();
 
 		if (pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_ONLY_DOWNLOAD)) {
@@ -970,24 +984,64 @@ dnf5_remove_old_cache_directories (PkBackend *backend, const gchar *release_ver)
 	}
 }
 
-Dnf5DownloadCallbacks::Dnf5DownloadCallbacks(PkBackendJob *job) : job(job) {}
+Dnf5DownloadCallbacks::Dnf5DownloadCallbacks(PkBackendJob *job, uint64_t total_size)
+    : job(job), total_size(total_size), finished_size(0), next_id(1) {}
+
+void *
+Dnf5DownloadCallbacks::add_new_download(void *user_data, const char *description, double total_to_download)
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	void *id = reinterpret_cast<void*>(next_id++);
+	item_progress[id] = 0;
+	return id;
+}
 
 int
 Dnf5DownloadCallbacks::progress(void *user_cb_data, double total_to_download, double downloaded)
 {
-	if (total_to_download > 0) {
-		pk_backend_job_set_percentage(job, (uint)(downloaded * 100 / total_to_download));
+	std::lock_guard<std::mutex> lock(mutex);
+	item_progress[user_cb_data] = downloaded;
+	
+	if (total_size > 0) {
+		double current_total = finished_size;
+		for (auto const& [id, prog] : item_progress) {
+			current_total += prog;
+		}
+		pk_backend_job_set_percentage(job, (uint)(current_total * 100 / total_size));
 	}
 	return 0;
 }
 
-Dnf5TransactionCallbacks::Dnf5TransactionCallbacks(PkBackendJob *job) : job(job) {}
+int
+Dnf5DownloadCallbacks::end(void *user_cb_data, TransferStatus status, const char *msg)
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	finished_size += item_progress[user_cb_data];
+	item_progress.erase(user_cb_data);
+	return 0;
+}
+
+Dnf5TransactionCallbacks::Dnf5TransactionCallbacks(PkBackendJob *job)
+    : job(job), total_items(0), current_item_index(0) {}
+
+void
+Dnf5TransactionCallbacks::before_begin(uint64_t total)
+{
+	total_items = total;
+}
+
+void
+Dnf5TransactionCallbacks::elem_progress(const libdnf5::base::TransactionPackage &item, uint64_t amount, uint64_t total)
+{
+	current_item_index = amount;
+}
 
 void
 Dnf5TransactionCallbacks::install_progress(const libdnf5::base::TransactionPackage &item, uint64_t amount, uint64_t total)
 {
-	if (total > 0) {
-		pk_backend_job_set_percentage(job, (uint)(amount * 100 / total));
+	if (total_items > 0 && total > 0) {
+		double item_frac = (double)amount / total;
+		pk_backend_job_set_percentage(job, (uint)((current_item_index + item_frac) * 100 / total_items));
 	}
 }
 
@@ -1000,8 +1054,9 @@ Dnf5TransactionCallbacks::install_start(const libdnf5::base::TransactionPackage 
 void
 Dnf5TransactionCallbacks::uninstall_progress(const libdnf5::base::TransactionPackage &item, uint64_t amount, uint64_t total)
 {
-	if (total > 0) {
-		pk_backend_job_set_percentage(job, (uint)(amount * 100 / total));
+	if (total_items > 0 && total > 0) {
+		double item_frac = (double)amount / total;
+		pk_backend_job_set_percentage(job, (uint)((current_item_index + item_frac) * 100 / total_items));
 	}
 }
 
