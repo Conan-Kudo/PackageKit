@@ -42,6 +42,7 @@ install_data(
 shared_module(
   'pk_backend_dnf5',
   'pk-backend-dnf5.cpp',
+  'dnf5-backend-vendor-@0@.cpp'.format(get_option('dnf_vendor')),
   dependencies: pk_backend_dnf5_deps,
   cpp_args: [
     '-std=c++20',

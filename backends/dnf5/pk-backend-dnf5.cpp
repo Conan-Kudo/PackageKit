@@ -35,6 +35,7 @@
 #include <vector>
 #include <set>
 #include <queue>
+#include "dnf5-backend-vendor.hpp"
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -63,6 +64,95 @@ dnf5_setup_base (PkBackendDnf5Private *priv)
 }
 
 // Helper functions (Internal)
+
+static bool
+dnf5_repo_is_devel (libdnf5::repo::Repo &repo)
+{
+	std::string id = repo.get_id();
+	return (id.ends_with("-debuginfo") || id.ends_with("-debugsource") || id.ends_with("-devel"));
+}
+
+static bool
+dnf5_repo_is_source (libdnf5::repo::Repo &repo)
+{
+	std::string id = repo.get_id();
+	return id.ends_with("-source");
+}
+
+// Obviously hardcoded based on the repository ID labels.
+// Colin Walters thinks this concept should be based on
+// user's trust of a GPG key or something more flexible.
+static bool
+repo_is_supported (libdnf5::repo::Repo &repo)
+{
+	return dnf5_validate_supported_repo(repo.get_id());
+}
+
+static bool
+pk_backend_repo_filter (libdnf5::repo::Repo &repo, PkBitfield filters)
+{
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_DEVELOPMENT) && !dnf5_repo_is_devel (repo))
+		return false;
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_NOT_DEVELOPMENT) && dnf5_repo_is_devel (repo))
+		return false;
+
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_SOURCE) && !dnf5_repo_is_source (repo))
+		return false;
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_NOT_SOURCE) && dnf5_repo_is_source (repo))
+		return false;
+
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_INSTALLED) && !repo.is_enabled())
+		return false;
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_NOT_INSTALLED) && repo.is_enabled())
+		return false;
+
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_SUPPORTED) && !repo_is_supported (repo))
+		return false;
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_NOT_SUPPORTED) && repo_is_supported (repo))
+		return false;
+
+	return true;
+}
+
+static bool
+dnf5_package_is_gui (libdnf5::rpm::Package &pkg)
+{
+	for (const auto &provide : pkg.get_provides()) {
+		std::string name = provide.get_name();
+		if (name.starts_with("application("))
+			return true;
+	}
+	return false;
+}
+
+static bool
+dnf5_package_filter (libdnf5::rpm::Package &pkg, PkBitfield filters)
+{
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_GUI) && !dnf5_package_is_gui (pkg))
+		return false;
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_NOT_GUI) && dnf5_package_is_gui (pkg))
+		return false;
+
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_DOWNLOADED) && !pkg.is_available_locally())
+		return false;
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_NOT_DOWNLOADED) && pkg.is_available_locally())
+		return false;
+
+	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_DEVELOPMENT) ||
+	    pk_bitfield_contain (filters, PK_FILTER_ENUM_NOT_DEVELOPMENT) ||
+	    pk_bitfield_contain (filters, PK_FILTER_ENUM_SOURCE) ||
+	    pk_bitfield_contain (filters, PK_FILTER_ENUM_NOT_SOURCE) ||
+	    pk_bitfield_contain (filters, PK_FILTER_ENUM_SUPPORTED) ||
+	    pk_bitfield_contain (filters, PK_FILTER_ENUM_NOT_SUPPORTED)) {
+		auto repo_weak = pkg.get_repo();
+		if (repo_weak.is_valid()) {
+			if (!pk_backend_repo_filter(*repo_weak, filters))
+				return false;
+		}
+	}
+
+	return true;
+}
 
 static std::vector<libdnf5::rpm::Package>
 dnf5_process_dependency (libdnf5::Base &base, const libdnf5::rpm::Package &pkg, PkRoleEnum role, gboolean recursive)
@@ -250,10 +340,16 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				dnf5_apply_filters(*priv->base, query_sum, filters);
 				query.filter_description(search_terms, libdnf5::sack::QueryCmp::ICONTAINS);
 				query_sum.filter_summary(search_terms, libdnf5::sack::QueryCmp::ICONTAINS);
-				for (auto p : query_sum) results.push_back(p);
+				for (auto p : query_sum) {
+					if (dnf5_package_filter(p, filters))
+						results.push_back(p);
+				}
 			}
 			
-			for (auto p : query) results.push_back(p);
+			for (auto p : query) {
+				if (dnf5_package_filter(p, filters))
+					results.push_back(p);
+			}
 			dnf5_sort_and_emit(job, results);
 			
 		} else if (role == PK_ROLE_ENUM_DEPENDS_ON || role == PK_ROLE_ENUM_REQUIRED_BY) {
@@ -266,7 +362,10 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			std::vector<libdnf5::rpm::Package> results;
 			for (const auto &pkg : input_pkgs) {
 				auto deps = dnf5_process_dependency(*priv->base, pkg, role, recursive);
-				results.insert(results.end(), deps.begin(), deps.end());
+				for (auto dep : deps) {
+					if (dnf5_package_filter(dep, filters))
+						results.push_back(dep);
+				}
 			}
 			dnf5_sort_and_emit(job, results);
 
@@ -284,12 +383,17 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				for (const auto &item : trans.get_transaction_packages()) {
 					auto action = item.get_action();
 					if (action == libdnf5::transaction::TransactionItemAction::UPGRADE || action == libdnf5::transaction::TransactionItemAction::INSTALL) {
-						dnf5_emit_pkg(job, item.get_package());
+						auto pkg = item.get_package();
+						if (dnf5_package_filter(pkg, filters))
+							dnf5_emit_pkg(job, pkg);
 					}
 				}
 			} else {
 				std::vector<libdnf5::rpm::Package> results;
-				for (auto p : query) results.push_back(p);
+				for (auto p : query) {
+					if (dnf5_package_filter(p, filters))
+						results.push_back(p);
+				}
 				dnf5_sort_and_emit(job, results);
 			}
 		} else if (role == PK_ROLE_ENUM_GET_DETAILS || role == PK_ROLE_ENUM_GET_FILES || role == PK_ROLE_ENUM_DOWNLOAD_PACKAGES || role == PK_ROLE_ENUM_GET_UPDATE_DETAIL) {
@@ -367,10 +471,8 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			for (auto repo : query) {
 				std::string id = repo->get_id();
 				if (id == "@System" || id == "@commandline") continue;
-				bool enabled = repo->is_enabled();
-				if (pk_bitfield_contain(filters, PK_FILTER_ENUM_INSTALLED) && !enabled) continue;
-				if (pk_bitfield_contain(filters, PK_FILTER_ENUM_NOT_INSTALLED) && enabled) continue;
-				pk_backend_job_repo_detail(job, id.c_str(), repo->get_name().c_str(), enabled);
+				if (!pk_backend_repo_filter(*repo, filters)) continue;
+				pk_backend_job_repo_detail(job, id.c_str(), repo->get_name().c_str(), repo->is_enabled());
 			}
 		}
 	} catch (const std::exception &e) {
