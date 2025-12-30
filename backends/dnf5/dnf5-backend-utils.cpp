@@ -753,7 +753,7 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 				
 				if (action == libdnf5::transaction::TransactionItemAction::INSTALL) info = PK_INFO_ENUM_INSTALLING;
 				else if (action == libdnf5::transaction::TransactionItemAction::UPGRADE) info = PK_INFO_ENUM_UPDATING;
-				else if (action == libdnf5::transaction::TransactionItemAction::REMOVE || action == libdnf5::transaction::TransactionItemAction::REPLACED) info = PK_INFO_ENUM_REMOVING;
+				else if (action == libdnf5::transaction::TransactionItemAction::REMOVE) info = PK_INFO_ENUM_REMOVING;
 				else if (action == libdnf5::transaction::TransactionItemAction::REINSTALL) info = PK_INFO_ENUM_REINSTALLING;
 				else if (action == libdnf5::transaction::TransactionItemAction::DOWNGRADE) info = PK_INFO_ENUM_DOWNGRADING;
 				
@@ -1048,7 +1048,13 @@ Dnf5TransactionCallbacks::install_progress(const libdnf5::base::TransactionPacka
 void
 Dnf5TransactionCallbacks::install_start(const libdnf5::base::TransactionPackage &item, uint64_t total)
 {
-	dnf5_emit_pkg(job, item.get_package(), PK_INFO_ENUM_INSTALLING);
+	auto action = item.get_action();
+	PkInfoEnum info = PK_INFO_ENUM_INSTALLING;
+	if (action == libdnf5::transaction::TransactionItemAction::UPGRADE ||
+	    action == libdnf5::transaction::TransactionItemAction::DOWNGRADE) {
+		info = PK_INFO_ENUM_UPDATING;
+	}
+	dnf5_emit_pkg(job, item.get_package(), info);
 }
 
 void
@@ -1063,5 +1069,10 @@ Dnf5TransactionCallbacks::uninstall_progress(const libdnf5::base::TransactionPac
 void
 Dnf5TransactionCallbacks::uninstall_start(const libdnf5::base::TransactionPackage &item, uint64_t total)
 {
-	dnf5_emit_pkg(job, item.get_package(), PK_INFO_ENUM_REMOVING);
+	auto action = item.get_action();
+	PkInfoEnum info = PK_INFO_ENUM_REMOVING;
+	if (action == libdnf5::transaction::TransactionItemAction::REPLACED) {
+		info = PK_INFO_ENUM_CLEANUP;
+	}
+	dnf5_emit_pkg(job, item.get_package(), info);
 }
