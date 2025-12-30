@@ -40,7 +40,7 @@
 #include "dnf5-backend-vendor.hpp"
 
 void
-dnf5_setup_base (PkBackendDnf5Private *priv)
+dnf5_setup_base (PkBackendDnf5Private *priv, gboolean refresh, gboolean force)
 {
 	priv->base = std::make_unique<libdnf5::Base>();
 
@@ -70,7 +70,23 @@ dnf5_setup_base (PkBackendDnf5Private *priv)
 	auto repo_sack = priv->base->get_repo_sack();
 	repo_sack->create_repos_from_system_configuration();
 	repo_sack->get_system_repo();
+
+	if (refresh) {
+		libdnf5::repo::RepoQuery query(*priv->base);
+		for (auto repo : query) {
+			if (repo->is_enabled()) {
+				repo->update_metadata(force != FALSE);
+			}
+		}
+	}
+
 	repo_sack->load_repos();
+}
+
+void
+dnf5_refresh_cache(PkBackendDnf5Private *priv, gboolean force)
+{
+	dnf5_setup_base(priv, TRUE, force);
 }
 
 PkInfoEnum
@@ -337,7 +353,12 @@ dnf5_resolve_package_ids(libdnf5::Base &base, gchar **package_ids)
 				pkgs.push_back(pkg);
 				break;
 			}
-		} catch (...) {}
+			if (query.empty()) {
+				g_debug("No package found for ID: %s", package_ids[i]);
+			}
+		} catch (const std::exception &e) {
+			g_debug("Exception resolving package ID %s: %s", package_ids[i], e.what());
+		}
 	}
 	return pkgs;
 }
@@ -369,6 +390,8 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			} else if (role == PK_ROLE_ENUM_SEARCH_FILE) {
 				query.filter_file(search_terms);
 			} else if (role == PK_ROLE_ENUM_RESOLVE) {
+				for (const auto &term : search_terms)
+					g_debug("Resolving package name: %s", term.c_str());
 				query.filter_name(search_terms, libdnf5::sack::QueryCmp::EQ);
 			} else if (role == PK_ROLE_ENUM_WHAT_PROVIDES) {
 				std::vector<std::string> provides;
@@ -661,10 +684,9 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			}
 			
 			for (auto &pkg : pkgs) {
-				std::string spec = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch();
-				if (role == PK_ROLE_ENUM_INSTALL_PACKAGES) goal.add_install(spec);
-				else if (role == PK_ROLE_ENUM_REMOVE_PACKAGES) goal.add_remove(spec);
-				else if (role == PK_ROLE_ENUM_UPDATE_PACKAGES) goal.add_rpm_upgrade(spec);
+				if (role == PK_ROLE_ENUM_INSTALL_PACKAGES) goal.add_rpm_install(pkg);
+				else if (role == PK_ROLE_ENUM_REMOVE_PACKAGES) goal.add_rpm_remove(pkg);
+				else if (role == PK_ROLE_ENUM_UPDATE_PACKAGES) goal.add_rpm_upgrade(pkg);
 			}
 			if (role == PK_ROLE_ENUM_UPDATE_PACKAGES && pkgs.empty()) {
 				if (dnf5_force_distupgrade_on_upgrade (*priv->base))
@@ -679,7 +701,7 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			std::vector<std::string> paths;
 			for (int i = 0; full_paths[i]; i++) paths.push_back(full_paths[i]);
 			auto added = priv->base->get_repo_sack()->add_cmdline_packages(paths);
-			for (const auto &p : added) goal.add_install(p.second.get_name() + "-" + p.second.get_evr() + "." + p.second.get_arch());
+			for (const auto &p : added) goal.add_rpm_install(p.second);
 		} else if (role == PK_ROLE_ENUM_UPGRADE_SYSTEM) {
 			gchar *distro_id = NULL;
 			PkUpgradeKindEnum upgrade_kind;

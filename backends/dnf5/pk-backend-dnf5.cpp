@@ -290,7 +290,7 @@ pk_backend_refresh_cache (PkBackend *backend, PkBackendJob *job, gboolean force)
 	PkBackendDnf5Private *priv = (PkBackendDnf5Private *) pk_backend_get_user_data (backend);
 	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&priv->mutex);
 	try {
-		dnf5_setup_base (priv);
+		dnf5_refresh_cache (priv, force);
 	} catch (const std::exception &e) {
 		pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
 	}
