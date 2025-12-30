@@ -25,6 +25,8 @@
 #include <libdnf5/base/base.hpp>
 #include <libdnf5/rpm/package_query.hpp>
 #include <libdnf5/repo/repo_query.hpp>
+#include <libdnf5/repo/download_callbacks.hpp>
+#include <libdnf5/rpm/transaction_callbacks.hpp>
 #include <glib.h>
 #include <memory>
 #include <mutex>
@@ -57,3 +59,22 @@ void dnf5_query_thread(PkBackendJob *job, GVariant *params, gpointer user_data);
 void dnf5_transaction_thread(PkBackendJob *job, GVariant *params, gpointer user_data);
 void dnf5_repo_thread(PkBackendJob *job, GVariant *params, gpointer user_data);
 void dnf5_remove_old_cache_directories(PkBackend *backend, const gchar *release_ver);
+
+class Dnf5DownloadCallbacks : public libdnf5::repo::DownloadCallbacks {
+public:
+	explicit Dnf5DownloadCallbacks(PkBackendJob *job);
+	int progress(void *user_cb_data, double total_to_download, double downloaded) override;
+private:
+	PkBackendJob *job;
+};
+
+class Dnf5TransactionCallbacks : public libdnf5::rpm::TransactionCallbacks {
+public:
+	explicit Dnf5TransactionCallbacks(PkBackendJob *job);
+	void install_progress(const libdnf5::base::TransactionPackage &item, uint64_t amount, uint64_t total) override;
+	void install_start(const libdnf5::base::TransactionPackage &item, uint64_t total) override;
+	void uninstall_progress(const libdnf5::base::TransactionPackage &item, uint64_t amount, uint64_t total) override;
+	void uninstall_start(const libdnf5::base::TransactionPackage &item, uint64_t total) override;
+private:
+	PkBackendJob *job;
+};

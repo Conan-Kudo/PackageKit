@@ -481,6 +481,7 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				g_variant_get (params, "(^as&s)", &package_ids, &directory);
 				auto pkgs = dnf5_resolve_package_ids(*priv->base, package_ids);
 				libdnf5::repo::PackageDownloader downloader(*priv->base);
+				priv->base->set_download_callbacks(std::make_unique<Dnf5DownloadCallbacks>(job));
 				for (auto &pkg : pkgs) {
 					dnf5_emit_pkg(job, pkg, PK_INFO_ENUM_DOWNLOADING);
 					downloader.add(pkg, directory);
@@ -727,14 +728,30 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 		}
 		
 		pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
+		priv->base->set_download_callbacks(std::make_unique<Dnf5DownloadCallbacks>(job));
 		trans.download();
 
 		if (pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_ONLY_DOWNLOAD)) {
+			// Iterate over transaction items and report them as if they were being processed
+			for (const auto &item : trans.get_transaction_packages()) {
+				auto action = item.get_action();
+				PkInfoEnum info = PK_INFO_ENUM_UNKNOWN;
+				
+				if (action == libdnf5::transaction::TransactionItemAction::INSTALL) info = PK_INFO_ENUM_INSTALLING;
+				else if (action == libdnf5::transaction::TransactionItemAction::UPGRADE) info = PK_INFO_ENUM_UPDATING;
+				else if (action == libdnf5::transaction::TransactionItemAction::REMOVE || action == libdnf5::transaction::TransactionItemAction::REPLACED) info = PK_INFO_ENUM_REMOVING;
+				else if (action == libdnf5::transaction::TransactionItemAction::REINSTALL) info = PK_INFO_ENUM_REINSTALLING;
+				else if (action == libdnf5::transaction::TransactionItemAction::DOWNGRADE) info = PK_INFO_ENUM_DOWNGRADING;
+				
+				if (info != PK_INFO_ENUM_UNKNOWN)
+					dnf5_emit_pkg(job, item.get_package(), info);
+			}
 			pk_backend_job_finished (job);
 			return;
 		}
 
 		pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
+		trans.set_callbacks(std::make_unique<Dnf5TransactionCallbacks>(job));
 		auto res = trans.run();
 		g_debug("Transaction run result: %s", libdnf5::base::Transaction::transaction_result_to_string(res).c_str());
 		if (res != libdnf5::base::Transaction::TransactionRunResult::SUCCESS) {
@@ -951,4 +968,45 @@ dnf5_remove_old_cache_directories (PkBackend *backend, const gchar *release_ver)
 				g_warning ("failed to remove directory %s: %s", entry.path().c_str(), ec.message().c_str());
 		}
 	}
+}
+
+Dnf5DownloadCallbacks::Dnf5DownloadCallbacks(PkBackendJob *job) : job(job) {}
+
+int
+Dnf5DownloadCallbacks::progress(void *user_cb_data, double total_to_download, double downloaded)
+{
+	if (total_to_download > 0) {
+		pk_backend_job_set_percentage(job, (uint)(downloaded * 100 / total_to_download));
+	}
+	return 0;
+}
+
+Dnf5TransactionCallbacks::Dnf5TransactionCallbacks(PkBackendJob *job) : job(job) {}
+
+void
+Dnf5TransactionCallbacks::install_progress(const libdnf5::base::TransactionPackage &item, uint64_t amount, uint64_t total)
+{
+	if (total > 0) {
+		pk_backend_job_set_percentage(job, (uint)(amount * 100 / total));
+	}
+}
+
+void
+Dnf5TransactionCallbacks::install_start(const libdnf5::base::TransactionPackage &item, uint64_t total)
+{
+	dnf5_emit_pkg(job, item.get_package(), PK_INFO_ENUM_INSTALLING);
+}
+
+void
+Dnf5TransactionCallbacks::uninstall_progress(const libdnf5::base::TransactionPackage &item, uint64_t amount, uint64_t total)
+{
+	if (total > 0) {
+		pk_backend_job_set_percentage(job, (uint)(amount * 100 / total));
+	}
+}
+
+void
+Dnf5TransactionCallbacks::uninstall_start(const libdnf5::base::TransactionPackage &item, uint64_t total)
+{
+	dnf5_emit_pkg(job, item.get_package(), PK_INFO_ENUM_REMOVING);
 }
