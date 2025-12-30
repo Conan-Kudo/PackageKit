@@ -461,7 +461,14 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 		
 		if (pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
 			for (const auto &item : trans.get_transaction_packages()) {
-				dnf5_emit_pkg(job, item.get_package());
+				auto action = item.get_action();
+				PkInfoEnum info = PK_INFO_ENUM_UNKNOWN;
+				if (action == libdnf5::transaction::TransactionItemAction::INSTALL || action == libdnf5::transaction::TransactionItemAction::UPGRADE) info = PK_INFO_ENUM_INSTALLING;
+				else if (action == libdnf5::transaction::TransactionItemAction::REMOVE || action == libdnf5::transaction::TransactionItemAction::REPLACED) info = PK_INFO_ENUM_REMOVING;
+				else if (action == libdnf5::transaction::TransactionItemAction::REINSTALL) info = PK_INFO_ENUM_REINSTALLING;
+				else if (action == libdnf5::transaction::TransactionItemAction::DOWNGRADE) info = PK_INFO_ENUM_DOWNGRADING;
+				
+				dnf5_emit_pkg(job, item.get_package(), info);
 			}
 			pk_backend_job_finished (job);
 			return;
@@ -564,8 +571,8 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			}
 
 			for (auto pkg : owner_query) {
-				g_debug("Adding owner package %s to removal goal", pkg.get_full_nevra().c_str());
-				goal.add_remove(pkg.get_full_nevra());
+				g_debug("Adding owner package %s to removal goal", pkg.get_name().c_str());
+				goal.add_remove(pkg.get_name());
 			}
 			
 			// If autoremove is true, also remove packages installed from these repos
@@ -576,7 +583,7 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 					std::string from_repo = pkg.get_from_repo_id();
 					for (const auto &id : all_repo_ids) {
 						if (from_repo == id) {
-							goal.add_remove(pkg.get_full_nevra());
+							goal.add_remove(pkg.get_name());
 							break;
 						}
 					}
@@ -587,6 +594,20 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			
 			pk_backend_job_set_status (job, PK_STATUS_ENUM_QUERY);
 			auto trans = goal.resolve();
+			g_debug("Transaction has %zu packages", trans.get_transaction_packages().size());
+			if (!trans.get_transaction_packages().empty()) {
+				for (const auto &item : trans.get_transaction_packages()) {
+					auto action = item.get_action();
+					PkInfoEnum info = PK_INFO_ENUM_UNKNOWN;
+					if (action == libdnf5::transaction::TransactionItemAction::INSTALL || action == libdnf5::transaction::TransactionItemAction::UPGRADE) info = PK_INFO_ENUM_INSTALLING;
+					else if (action == libdnf5::transaction::TransactionItemAction::REMOVE || action == libdnf5::transaction::TransactionItemAction::REPLACED) info = PK_INFO_ENUM_REMOVING;
+					else if (action == libdnf5::transaction::TransactionItemAction::REINSTALL) info = PK_INFO_ENUM_REINSTALLING;
+					else if (action == libdnf5::transaction::TransactionItemAction::DOWNGRADE) info = PK_INFO_ENUM_DOWNGRADING;
+					
+					dnf5_emit_pkg(job, item.get_package(), info);
+				}
+			}
+
 			if (!trans.get_transaction_problems().empty()) {
 				std::string msg;
 				for (const auto &p : trans.get_transaction_problems()) msg += p + "; ";
@@ -595,11 +616,7 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				return;
 			}
 			
-			if (pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
-				for (const auto &item : trans.get_transaction_packages()) {
-					dnf5_emit_pkg(job, item.get_package());
-				}
-			} else {
+			if (!pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
 				pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
 				trans.download();
 				pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
