@@ -751,8 +751,17 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			PkUpgradeKindEnum upgrade_kind;
 			PkBitfield transaction_flags;
 			g_variant_get (params, "(t&su)", &transaction_flags, &distro_id, &upgrade_kind);
-			if (distro_id)
-				dnf5_setup_base(priv, TRUE, FALSE, distro_id);
+			if (distro_id) {
+				dnf5_setup_base(priv, TRUE, TRUE, distro_id);
+				
+				g_debug("Checking repositories for system upgrade to %s:", distro_id);
+				libdnf5::repo::RepoQuery query(*priv->base);
+				for (auto repo : query) {
+					g_debug("Repo %s: enabled=%d",
+						repo->get_id().c_str(),
+						repo->is_enabled());
+				}
+			}
 		}
 
 		libdnf5::Goal goal(*priv->base);
