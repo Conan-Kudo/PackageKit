@@ -71,6 +71,9 @@ dnf5_setup_base (PkBackendDnf5Private *priv, gboolean refresh, gboolean force, c
 			g_debug("Using cachedir: %s", cache_dir);
 			config.get_cachedir_option().set(libdnf5::Option::Priority::COMMANDLINE, cache_dir);
 		}
+		
+		// Always assume yes to avoid interactive prompts failing the transaction
+		config.get_assumeyes_option().set(libdnf5::Option::Priority::COMMANDLINE, true);
 	}
 
 	priv->base->setup();
