@@ -113,6 +113,10 @@ pk_backend_get_roles (PkBackend *backend)
         PK_ROLE_ENUM_INSTALL_PACKAGES,
         PK_ROLE_ENUM_REMOVE_PACKAGES,
         PK_ROLE_ENUM_UPDATE_PACKAGES,
+        PK_ROLE_ENUM_UPDATE_PACKAGES,
+        PK_ROLE_ENUM_REPO_ENABLE,
+        PK_ROLE_ENUM_REPO_SET_DATA,
+        PK_ROLE_ENUM_REPO_REMOVE,
         PK_ROLE_ENUM_REQUIRED_BY,
         PK_ROLE_ENUM_RESOLVE,
         PK_ROLE_ENUM_REFRESH_CACHE,
@@ -427,6 +431,186 @@ pk_backend_get_repo_list (PkBackend *backend,
         }
     } catch (const std::exception &e) {
         g_warning ("PkBackendDnf5: GetRepoList failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_repo_set_data (PkBackend *backend,
+                          PkBackendJob *job,
+                          const gchar *repo_id,
+                          const gchar *parameter,
+                          const gchar *value)
+{
+    g_debug ("PkBackendDnf5: repo_set_data repo=%s param=%s value=%s", repo_id, parameter, value);
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_QUERY);
+        
+        auto repo_sack = dnf5_base->get_repo_sack();
+        // Since we need to modify the repo, we look it up.
+        // libdnf5::repo::RepoSack::get_repo(const std::string &id) returns a pointer
+        // However, repo_sack->get_repos() returns a vector.
+        // Let's check if we can query strictly.
+        
+        // Use RepoQuery
+        libdnf5::repo::RepoQuery query(*dnf5_base);
+        query.filter_id(repo_id);
+        
+        bool found = false;
+        for (auto repo : query) {
+             found = true;
+                 
+             // Handle "enabled" parameter
+             if (g_strcmp0(parameter, "enabled") == 0) {
+                  bool enable = (g_strcmp0(value, "1") == 0 || g_strcmp0(value, "true") == 0);
+                  
+                  // Check if already in desired state
+                  if (repo->is_enabled() == enable) {
+                      pk_backend_job_error_code (job, PK_ERROR_ENUM_REPO_ALREADY_SET, 
+                                                "Repo %s already %s", repo_id, enable ? "enabled" : "disabled");
+                      pk_backend_job_finished (job);
+                      return;
+                  }
+                  
+                  if (enable) {
+                      repo->enable();
+                  } else {
+                      repo->disable();
+                  }
+                  
+                  // We need to persist this change.
+                  // TODO: Use RepoWriter or configuration write method when identified.
+             } else {
+                  pk_backend_job_error_code (job, PK_ERROR_ENUM_NOT_SUPPORTED, 
+                                            "Only 'enabled' parameter is supported");
+                  pk_backend_job_finished (job);
+                  return;
+             }
+        }
+        
+        if (!found) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_REPO_NOT_FOUND, "Repo %s not found", repo_id);
+             pk_backend_job_finished (job);
+             return;
+        }
+
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: RepoSetData failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+
+void
+pk_backend_repo_enable (PkBackend *backend,
+                        PkBackendJob *job,
+                        const gchar *repo_id,
+                        gboolean enabled)
+{
+    // Delegate to repo_set_data
+    pk_backend_repo_set_data(backend, job, repo_id, "enabled", enabled ? "1" : "0");
+}
+
+void
+pk_backend_repo_remove (PkBackend *backend,
+                        PkBackendJob *job,
+                        PkBitfield transaction_flags,
+                        const gchar *repo_id,
+                        gboolean autoremove)
+{
+    g_debug ("PkBackendDnf5: repo_remove repo=%s autoremove=%d", repo_id, autoremove);
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_QUERY);
+        
+        auto repo_sack = dnf5_base->get_repo_sack();
+        libdnf5::repo::RepoQuery query(*dnf5_base);
+        query.filter_id(repo_id);
+        
+        bool found = false;
+        std::string filename;
+        
+        for (auto repo : query) {
+             found = true;
+             auto fn = repo->get_repo_file_path();
+             if (!fn.empty()) {
+                 filename = fn;
+             }
+        }
+        
+        if (!found) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_REPO_NOT_FOUND, "Repo %s not found", repo_id);
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        if (filename.empty()) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Repo %s has no filename", repo_id);
+             pk_backend_job_finished (job);
+             return;
+        }
+        
+        // Find which package provides this file
+        libdnf5::rpm::PackageQuery pkg_query(*dnf5_base);
+        std::vector<std::string> file_query = { filename };
+        pkg_query.filter_file(file_query);
+        pkg_query.filter_installed();
+        
+        std::vector<libdnf5::rpm::Package> pkgs;
+        for (auto pkg : pkg_query) pkgs.push_back(pkg);
+        
+        if (pkgs.empty()) {
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_FOUND, 
+                                      "Repo %s configuration %s is not owned by any package", repo_id, filename.c_str());
+            pk_backend_job_finished (job);
+            return;
+        }
+        
+        // Remove the package(s) that own the repo file
+        libdnf5::Goal goal(*dnf5_base);
+        for (const auto &pkg : pkgs) {
+            std::string spec = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch();
+            goal.add_remove(spec);
+        }
+        
+        // Resolve transaction
+        auto transaction = goal.resolve();
+        
+        // Check for problems
+        auto problems = transaction.get_transaction_problems();
+        if (!problems.empty()) {
+             std::string problem_msg;
+             for (const auto &p : problems) problem_msg += p + "; ";
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_DEP_RESOLUTION_FAILED, 
+                                       "Dependency resolution failed: %s", problem_msg.c_str());
+             pk_backend_job_finished (job);
+             return;
+        }
+        
+        // Download and Run
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
+        transaction.download();
+        
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
+        transaction.run();
+
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: RepoRemove failed: %s", e.what());
         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
     }
     pk_backend_job_finished (job);
