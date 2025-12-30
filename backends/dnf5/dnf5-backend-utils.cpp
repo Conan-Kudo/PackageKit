@@ -429,7 +429,6 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			
 			std::vector<libdnf5::rpm::Package> results;
 			libdnf5::rpm::PackageQuery query(*priv->base);
-			dnf5_apply_filters(*priv->base, query, filters);
 			
 			std::vector<std::string> search_terms;
 			for (int i = 0; values[i]; i++) search_terms.push_back(values[i]);
@@ -439,6 +438,8 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			} else if (role == PK_ROLE_ENUM_SEARCH_FILE) {
 				query.filter_file(search_terms);
 			} else if (role == PK_ROLE_ENUM_RESOLVE) {
+				// For RESOLVE, filter by name FIRST, then apply other filters
+				// This matches the old DNF backend behavior
 				for (const auto &term : search_terms)
 					g_debug("Resolving package name: %s", term.c_str());
 				query.filter_name(search_terms, libdnf5::sack::QueryCmp::EQ);
@@ -458,13 +459,21 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				query.filter_provides(provides);
 			} else if (role == PK_ROLE_ENUM_SEARCH_DETAILS) {
 				libdnf5::rpm::PackageQuery query_sum(*priv->base);
-				dnf5_apply_filters(*priv->base, query_sum, filters);
 				query.filter_description(search_terms, libdnf5::sack::QueryCmp::ICONTAINS);
 				query_sum.filter_summary(search_terms, libdnf5::sack::QueryCmp::ICONTAINS);
+				// Apply filters to both queries before merging
+				dnf5_apply_filters(*priv->base, query, filters);
+				dnf5_apply_filters(*priv->base, query_sum, filters);
 				for (auto p : query_sum) {
 					if (dnf5_package_filter(p, filters))
 						results.push_back(p);
 				}
+			}
+			
+			// Apply filters AFTER filtering by name/file/provides for most roles
+			// Exception: SEARCH_DETAILS already applied filters above
+			if (role != PK_ROLE_ENUM_SEARCH_DETAILS) {
+				dnf5_apply_filters(*priv->base, query, filters);
 			}
 			
 			for (auto p : query) {
