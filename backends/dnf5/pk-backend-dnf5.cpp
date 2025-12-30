@@ -540,6 +540,8 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				return;
 			}
 			
+			g_debug("Repo %s uses file %s", repo_id, repo_file.c_str());
+
 			// Find all repos in the same file to track all packages that should be removed
 			std::vector<std::string> all_repo_ids;
 			libdnf5::repo::RepoQuery all_repos_query(*priv->base);
@@ -555,9 +557,15 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			libdnf5::rpm::PackageQuery owner_query(*priv->base);
 			owner_query.filter_installed();
 			owner_query.filter_file({repo_file});
+			
+			if (owner_query.empty()) {
+				g_debug("filter_file failed, trying provides for %s", repo_file.c_str());
+				owner_query.filter_provides(repo_file);
+			}
+
 			for (auto pkg : owner_query) {
-				std::string spec = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch();
-				goal.add_remove(spec);
+				g_debug("Adding owner package %s to removal goal", pkg.get_full_nevra().c_str());
+				goal.add_remove(pkg.get_full_nevra());
 			}
 			
 			// If autoremove is true, also remove packages installed from these repos
@@ -568,8 +576,7 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 					std::string from_repo = pkg.get_from_repo_id();
 					for (const auto &id : all_repo_ids) {
 						if (from_repo == id) {
-							std::string spec = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch();
-							goal.add_remove(spec);
+							goal.add_remove(pkg.get_full_nevra());
 							break;
 						}
 					}
