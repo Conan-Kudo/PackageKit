@@ -111,6 +111,8 @@ pk_backend_get_roles (PkBackend *backend)
         PK_ROLE_ENUM_GET_REPO_LIST,
         PK_ROLE_ENUM_INSTALL_FILES,
         PK_ROLE_ENUM_INSTALL_PACKAGES,
+        PK_ROLE_ENUM_REMOVE_PACKAGES,
+        PK_ROLE_ENUM_UPDATE_PACKAGES,
         PK_ROLE_ENUM_REQUIRED_BY,
         PK_ROLE_ENUM_RESOLVE,
         PK_ROLE_ENUM_REFRESH_CACHE,
@@ -1437,6 +1439,239 @@ pk_backend_install_files (PkBackend *backend,
 
     } catch (const std::exception &e) {
         g_warning ("PkBackendDnf5: InstallFiles failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+
+void
+pk_backend_remove_packages (PkBackend *backend,
+                            PkBackendJob *job,
+                            PkBitfield transaction_flags,
+                            gchar **package_ids,
+                            gboolean allow_deps,
+                            gboolean autoremove)
+{
+    g_autoptr(GError) error = NULL;
+
+    std::lock_guard<std::mutex> lock(dnf5_mutex);
+    if (!dnf5_base) {
+         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+         pk_backend_job_finished (job);
+         return;
+    }
+
+    pk_backend_job_set_status (job, PK_STATUS_ENUM_QUERY);
+
+    try {
+        // Resolve package IDs
+        std::vector<libdnf5::rpm::Package> pkgs = dnf5_resolve_package_ids(package_ids);
+        if (pkgs.empty()) {
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_FOUND, "No packages found");
+            pk_backend_job_finished (job);
+            return;
+        }
+
+        // Check if packages are installed
+        for (const auto &pkg : pkgs) {
+             if (pkg.get_install_time() == 0) {
+                 pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_INSTALLED, 
+                                           "Package %s is not installed", pkg.get_name().c_str());
+                 pk_backend_job_finished (job);
+                 return;
+             }
+        }
+
+        // Create goal and add packages for removal
+        libdnf5::Goal goal(*dnf5_base);
+        for (const auto &pkg : pkgs) {
+            std::string spec = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch();
+            goal.add_remove(spec);
+        }
+
+        // Resolve transaction
+        auto transaction = goal.resolve();
+
+        // Check for transaction problems
+        auto problems = transaction.get_transaction_problems();
+        if (!problems.empty()) {
+            std::string problem_msg;
+            for (const auto &p : problems) {
+                if (!problem_msg.empty()) problem_msg += "; ";
+                problem_msg += p;
+            }
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_DEP_RESOLUTION_FAILED, 
+                                      "Dependency resolution failed: %s", problem_msg.c_str());
+            pk_backend_job_finished (job);
+            return;
+        }
+
+        // Check for simulation
+        if (pk_bitfield_contain(transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
+             auto transaction_items = transaction.get_transaction_packages();
+             for (const auto &item : transaction_items) {
+                 auto action = item.get_action();
+                 PkInfoEnum info = PK_INFO_ENUM_UNKNOWN;
+                 
+                 switch (action) {
+                     case libdnf5::transaction::TransactionItemAction::INSTALL:
+                         info = PK_INFO_ENUM_INSTALLING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::UPGRADE:
+                         info = PK_INFO_ENUM_UPDATING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::DOWNGRADE:
+                         info = PK_INFO_ENUM_DOWNGRADING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::REINSTALL:
+                         info = PK_INFO_ENUM_REINSTALLING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::REMOVE:
+                         info = PK_INFO_ENUM_REMOVING;
+                         break;
+                     default:
+                         continue;
+                 }
+
+                 auto pkg = item.get_package();
+                 std::string repo_id = pkg.get_repo_id();
+                 // Create package ID with "installed" data if action is remove/reinstall
+                 if (action == libdnf5::transaction::TransactionItemAction::REMOVE || 
+                     action == libdnf5::transaction::TransactionItemAction::REINSTALL) {
+                     repo_id = "installed";
+                 }
+                 
+                 std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+                 pk_backend_job_package(job, info, pid.c_str(), pkg.get_summary().c_str());
+             }
+             pk_backend_job_finished(job);
+             return;
+        }
+
+        // Download (though often not needed for remove, good practice for transaction lifecycle)
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
+        transaction.download();
+
+        // Run the transaction
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
+        transaction.run();
+
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: RemovePackages failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_update_packages (PkBackend *backend,
+                            PkBackendJob *job,
+                            PkBitfield transaction_flags,
+                            gchar **package_ids)
+{
+    g_autoptr(GError) error = NULL;
+
+    std::lock_guard<std::mutex> lock(dnf5_mutex);
+    if (!dnf5_base) {
+         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+         pk_backend_job_finished (job);
+         return;
+    }
+    
+    pk_backend_job_set_status (job, PK_STATUS_ENUM_QUERY);
+
+    try {
+        // Create goal
+        libdnf5::Goal goal(*dnf5_base);
+        
+        if (package_ids != nullptr && package_ids[0] != nullptr) {
+            // Resolve package IDs and add specific upgrades
+             std::vector<libdnf5::rpm::Package> pkgs = dnf5_resolve_package_ids(package_ids);
+             if (pkgs.empty()) {
+                 pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_FOUND, "No packages found");
+                 pk_backend_job_finished (job);
+                 return;
+             }
+             
+             for (const auto &pkg : pkgs) {
+                 std::string spec = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch();
+                 goal.add_rpm_upgrade(spec);
+             }
+        } else {
+             // Upgrade all
+             goal.add_rpm_upgrade();
+        }
+
+        // Resolve transaction
+        auto transaction = goal.resolve();
+
+        // Check for transaction problems
+        auto problems = transaction.get_transaction_problems();
+        if (!problems.empty()) {
+            std::string problem_msg;
+            for (const auto &p : problems) {
+                if (!problem_msg.empty()) problem_msg += "; ";
+                problem_msg += p;
+            }
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_DEP_RESOLUTION_FAILED, 
+                                      "Dependency resolution failed: %s", problem_msg.c_str());
+            pk_backend_job_finished (job);
+            return;
+        }
+
+        // Check for simulation
+        if (pk_bitfield_contain(transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
+             auto transaction_items = transaction.get_transaction_packages();
+             for (const auto &item : transaction_items) {
+                 auto action = item.get_action();
+                 PkInfoEnum info = PK_INFO_ENUM_UNKNOWN;
+                 
+                 switch (action) {
+                     case libdnf5::transaction::TransactionItemAction::INSTALL:
+                         info = PK_INFO_ENUM_INSTALLING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::UPGRADE:
+                         info = PK_INFO_ENUM_UPDATING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::DOWNGRADE:
+                         info = PK_INFO_ENUM_DOWNGRADING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::REINSTALL:
+                         info = PK_INFO_ENUM_REINSTALLING;
+                         break;
+                     case libdnf5::transaction::TransactionItemAction::REMOVE:
+                         info = PK_INFO_ENUM_REMOVING;
+                         break;
+                     default:
+                         continue;
+                 }
+
+                 auto pkg = item.get_package();
+                 std::string repo_id = pkg.get_repo_id();
+                 // Create package ID with "installed" data if action is remove/reinstall
+                 if (action == libdnf5::transaction::TransactionItemAction::REMOVE || 
+                     action == libdnf5::transaction::TransactionItemAction::REINSTALL) {
+                     repo_id = "installed";
+                 }
+                 
+                 std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+                 pk_backend_job_package(job, info, pid.c_str(), pkg.get_summary().c_str());
+             }
+             pk_backend_job_finished(job);
+             return;
+        }
+
+        // Download
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
+        transaction.download();
+
+        // Run the transaction
+        pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
+        transaction.run();
+
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: UpdatePackages failed: %s", e.what());
         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
     }
     pk_backend_job_finished (job);
