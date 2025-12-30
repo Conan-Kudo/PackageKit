@@ -9,6 +9,14 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 #include "dnf5-backend-utils.hpp"
@@ -720,6 +728,12 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 		
 		pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
 		trans.download();
+
+		if (pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_ONLY_DOWNLOAD)) {
+			pk_backend_job_finished (job);
+			return;
+		}
+
 		pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
 		auto res = trans.run();
 		g_debug("Transaction run result: %s", libdnf5::base::Transaction::transaction_result_to_string(res).c_str());
