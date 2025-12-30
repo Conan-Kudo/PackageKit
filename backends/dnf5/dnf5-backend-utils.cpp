@@ -343,6 +343,36 @@ dnf5_resolve_package_ids(libdnf5::Base &base, gchar **package_ids)
 	if (!package_ids) return pkgs;
 	
 	for (int i = 0; package_ids[i] != NULL; i++) {
+		// Check if this is a simple package name (no semicolons) or a full package ID
+		if (strchr(package_ids[i], ';') == NULL) {
+			// Simple package name - search by name and get latest available
+			try {
+				g_debug("Resolving simple package name: %s", package_ids[i]);
+				libdnf5::rpm::PackageQuery query(base);
+				query.filter_name(std::string(package_ids[i]), libdnf5::sack::QueryCmp::EQ);
+				query.filter_available();
+				query.filter_latest_evr();
+				query.filter_arch(libdnf5::rpm::get_supported_arches());
+
+				
+				if (!query.empty()) {
+					for (auto pkg : query) {
+						g_debug("Found package: name=%s, evr=%s, arch=%s, repo=%s",
+							pkg.get_name().c_str(), pkg.get_evr().c_str(), 
+							pkg.get_arch().c_str(), pkg.get_repo_id().c_str());
+						pkgs.push_back(pkg);
+						break; // Take the first match
+					}
+				} else {
+					g_debug("No available package found for name: %s", package_ids[i]);
+				}
+			} catch (const std::exception &e) {
+				g_debug("Exception resolving package name %s: %s", package_ids[i], e.what());
+			}
+			continue;
+		}
+		
+		// Full package ID - use existing logic
 		g_auto(GStrv) split = pk_package_id_split(package_ids[i]);
 		if (!split) continue;
 		
