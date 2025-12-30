@@ -71,11 +71,11 @@ dnf5_setup_base (PkBackendDnf5Private *priv, gboolean refresh, gboolean force)
 	repo_sack->create_repos_from_system_configuration();
 	repo_sack->get_system_repo();
 
-	if (refresh) {
+	if (refresh && force) {
 		libdnf5::repo::RepoQuery query(*priv->base);
 		for (auto repo : query) {
 			if (repo->is_enabled()) {
-				repo->update_metadata(force != FALSE);
+				repo->expire();
 			}
 		}
 	}
