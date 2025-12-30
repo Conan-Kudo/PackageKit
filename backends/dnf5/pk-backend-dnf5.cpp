@@ -21,6 +21,7 @@
 
 #include <pk-backend.h>
 #include <packagekit-glib2/pk-common-private.h>
+#include <packagekit-glib2/pk-update-detail.h>
 #include <libdnf5/base/base.hpp>
 #include <libdnf5/conf/config_parser.hpp>
 #include <libdnf5/logger/logger.hpp>
@@ -89,17 +90,45 @@ dnf5_setup_base (PkBackendDnf5Private *priv)
 	repo_sack->load_repos();
 }
 
+static PkInfoEnum
+dnf5_advisory_kind_to_info_enum (const std::string &type)
+{
+	if (type == "security")
+		return PK_INFO_ENUM_SECURITY;
+	if (type == "bugfix")
+		return PK_INFO_ENUM_BUGFIX;
+	if (type == "enhancement")
+		return PK_INFO_ENUM_ENHANCEMENT;
+	if (type == "newpackage")
+		return PK_INFO_ENUM_NORMAL;
+	return PK_INFO_ENUM_NORMAL;
+}
+
+static PkInfoEnum
+dnf5_update_severity_to_enum (const std::string &severity)
+{
+	if (severity == "low")
+		return PK_INFO_ENUM_LOW;
+	if (severity == "moderate")
+		return PK_INFO_ENUM_NORMAL;
+	if (severity == "important")
+		return PK_INFO_ENUM_IMPORTANT;
+	if (severity == "critical")
+		return PK_INFO_ENUM_CRITICAL;
+	return PK_INFO_ENUM_UNKNOWN;
+}
+
 // Helper functions (Internal)
 
 static bool
-dnf5_repo_is_devel (libdnf5::repo::Repo &repo)
+dnf5_repo_is_devel (const libdnf5::repo::Repo &repo)
 {
 	std::string id = repo.get_id();
 	return (id.ends_with("-debuginfo") || id.ends_with("-debugsource") || id.ends_with("-devel"));
 }
 
 static bool
-dnf5_repo_is_source (libdnf5::repo::Repo &repo)
+dnf5_repo_is_source (const libdnf5::repo::Repo &repo)
 {
 	std::string id = repo.get_id();
 	return id.ends_with("-source");
@@ -109,13 +138,13 @@ dnf5_repo_is_source (libdnf5::repo::Repo &repo)
 // Colin Walters thinks this concept should be based on
 // user's trust of a GPG key or something more flexible.
 static bool
-repo_is_supported (libdnf5::repo::Repo &repo)
+repo_is_supported (const libdnf5::repo::Repo &repo)
 {
 	return dnf5_validate_supported_repo(repo.get_id());
 }
 
 static bool
-pk_backend_repo_filter (libdnf5::repo::Repo &repo, PkBitfield filters)
+pk_backend_repo_filter (const libdnf5::repo::Repo &repo, PkBitfield filters)
 {
 	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_DEVELOPMENT) && !dnf5_repo_is_devel (repo))
 		return false;
@@ -141,7 +170,7 @@ pk_backend_repo_filter (libdnf5::repo::Repo &repo, PkBitfield filters)
 }
 
 static bool
-dnf5_package_is_gui (libdnf5::rpm::Package &pkg)
+dnf5_package_is_gui (const libdnf5::rpm::Package &pkg)
 {
 	for (const auto &provide : pkg.get_provides()) {
 		std::string name = provide.get_name();
@@ -152,7 +181,7 @@ dnf5_package_is_gui (libdnf5::rpm::Package &pkg)
 }
 
 static bool
-dnf5_package_filter (libdnf5::rpm::Package &pkg, PkBitfield filters)
+dnf5_package_filter (const libdnf5::rpm::Package &pkg, PkBitfield filters)
 {
 	if (pk_bitfield_contain (filters, PK_FILTER_ENUM_GUI) && !dnf5_package_is_gui (pkg))
 		return false;
@@ -216,7 +245,7 @@ dnf5_process_dependency (libdnf5::Base &base, const libdnf5::rpm::Package &pkg, 
 }
 
 static void
-dnf5_emit_pkg (PkBackendJob *job, const libdnf5::rpm::Package &pkg, PkInfoEnum info = PK_INFO_ENUM_UNKNOWN)
+dnf5_emit_pkg (PkBackendJob *job, const libdnf5::rpm::Package &pkg, PkInfoEnum info = PK_INFO_ENUM_UNKNOWN, PkInfoEnum severity = PK_INFO_ENUM_UNKNOWN)
 {
 	if (info == PK_INFO_ENUM_UNKNOWN) {
 		info = PK_INFO_ENUM_AVAILABLE;
@@ -232,7 +261,11 @@ dnf5_emit_pkg (PkBackendJob *job, const libdnf5::rpm::Package &pkg, PkInfoEnum i
 	}
 	
 	std::string package_id = pkg.get_name() + ";" + evr + ";" + pkg.get_arch() + ";" + repo_id;
-	pk_backend_job_package (job, info, package_id.c_str(), pkg.get_summary().c_str());
+	if (severity != PK_INFO_ENUM_UNKNOWN) {
+		pk_backend_job_package_full (job, info, package_id.c_str(), pkg.get_summary().c_str(), severity);
+	} else {
+		pk_backend_job_package (job, info, package_id.c_str(), pkg.get_summary().c_str());
+	}
 }
 
 static void
@@ -406,12 +439,38 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				libdnf5::Goal goal(*priv->base);
 				goal.add_rpm_upgrade();
 				auto trans = goal.resolve();
+				
+				std::vector<libdnf5::rpm::Package> update_pkgs;
 				for (const auto &item : trans.get_transaction_packages()) {
 					auto action = item.get_action();
 					if (action == libdnf5::transaction::TransactionItemAction::UPGRADE || action == libdnf5::transaction::TransactionItemAction::INSTALL) {
-						auto pkg = item.get_package();
-						if (dnf5_package_filter(pkg, filters))
-							dnf5_emit_pkg(job, pkg);
+						update_pkgs.push_back(item.get_package());
+					}
+				}
+				
+				libdnf5::advisory::AdvisoryQuery adv_query(*priv->base);
+				libdnf5::rpm::PackageSet pkg_set(priv->base->get_weak_ptr());
+				for (const auto &pkg : update_pkgs) pkg_set.add(pkg);
+				adv_query.filter_packages(pkg_set);
+				
+				std::map<std::string, libdnf5::advisory::Advisory> pkg_to_advisory;
+				for (const auto &adv_pkg : adv_query.get_advisory_packages_sorted(pkg_set)) {
+					std::string key = adv_pkg.get_name() + ";" + adv_pkg.get_evr() + ";" + adv_pkg.get_arch();
+					pkg_to_advisory.emplace(key, adv_pkg.get_advisory());
+				}
+				
+				for (const auto &pkg : update_pkgs) {
+					if (dnf5_package_filter(pkg, filters)) {
+						PkInfoEnum info = PK_INFO_ENUM_UNKNOWN;
+						PkInfoEnum severity = PK_INFO_ENUM_UNKNOWN;
+						
+						std::string key = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch();
+						auto it = pkg_to_advisory.find(key);
+						if (it != pkg_to_advisory.end()) {
+							info = dnf5_advisory_kind_to_info_enum(it->second.get_type());
+							severity = dnf5_update_severity_to_enum(it->second.get_severity());
+						}
+						dnf5_emit_pkg(job, pkg, info, severity);
 					}
 				}
 			} else {
@@ -450,12 +509,79 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			}
 			
 			auto pkgs = dnf5_resolve_package_ids(*priv->base, package_ids);
+			if (role == PK_ROLE_ENUM_GET_UPDATE_DETAIL) {
+				libdnf5::advisory::AdvisoryQuery adv_query(*priv->base);
+				libdnf5::rpm::PackageSet pkg_set(priv->base->get_weak_ptr());
+				for (const auto &pkg : pkgs) pkg_set.add(pkg);
+				adv_query.filter_packages(pkg_set);
+				
+				std::map<std::string, libdnf5::advisory::AdvisoryPackage> pkg_to_adv_pkg;
+				for (const auto &adv_pkg : adv_query.get_advisory_packages_sorted(pkg_set)) {
+					std::string key = adv_pkg.get_name() + ";" + adv_pkg.get_evr() + ";" + adv_pkg.get_arch();
+					pkg_to_adv_pkg.emplace(key, adv_pkg);
+				}
+				
+				g_autoptr(GPtrArray) update_details = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
+				for (auto &pkg : pkgs) {
+					std::string repo_id = pkg.get_repo_id();
+					if (pkg.get_install_time() > 0) repo_id = "installed";
+					std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
+					
+					std::string key = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch();
+					auto it = pkg_to_adv_pkg.find(key);
+					if (it != pkg_to_adv_pkg.end()) {
+						auto advisory = it->second.get_advisory();
+						g_autoptr(PkUpdateDetail) item = pk_update_detail_new ();
+						
+						std::vector<std::string> bugzilla_urls, cve_urls, vendor_urls;
+						for (const auto &ref : advisory.get_references()) {
+							if (ref.get_url().empty()) continue;
+							if (ref.get_type() == "bugzilla") bugzilla_urls.push_back(ref.get_url());
+							else if (ref.get_type() == "cve") cve_urls.push_back(ref.get_url());
+							else if (ref.get_type() == "vendor") vendor_urls.push_back(ref.get_url());
+						}
+						
+						auto buildtime = advisory.get_buildtime();
+						g_autoptr(GDateTime) dt = g_date_time_new_from_unix_local(buildtime);
+						g_autofree gchar *date_str = g_date_time_format(dt, "%Y-%m-%d");
+						
+						PkRestartEnum restart = PK_RESTART_ENUM_NONE;
+						if (it->second.get_reboot_suggested()) restart = PK_RESTART_ENUM_SYSTEM;
+						else if (it->second.get_restart_suggested()) restart = PK_RESTART_ENUM_APPLICATION;
+						else if (it->second.get_relogin_suggested()) restart = PK_RESTART_ENUM_SESSION;
+						
+						g_auto(GStrv) bugzilla_strv = (gchar **) g_new0 (gchar *, bugzilla_urls.size() + 1);
+						for (size_t i = 0; i < bugzilla_urls.size(); i++) bugzilla_strv[i] = g_strdup(bugzilla_urls[i].c_str());
+						g_auto(GStrv) cve_strv = (gchar **) g_new0 (gchar *, cve_urls.size() + 1);
+						for (size_t i = 0; i < cve_urls.size(); i++) cve_strv[i] = g_strdup(cve_urls[i].c_str());
+						g_auto(GStrv) vendor_strv = (gchar **) g_new0 (gchar *, vendor_urls.size() + 1);
+						for (size_t i = 0; i < vendor_urls.size(); i++) vendor_strv[i] = g_strdup(vendor_urls[i].c_str());
+						
+						g_object_set (item,
+							      "package-id", pid.c_str(),
+							      "bugzilla-urls", bugzilla_strv,
+							      "cve-urls", cve_strv,
+							      "vendor-urls", vendor_strv,
+							      "update-text", advisory.get_description().c_str(),
+							      "restart", restart,
+							      "state", PK_UPDATE_STATE_ENUM_STABLE,
+							      "issued", date_str,
+							      "updated", date_str,
+							      NULL);
+						g_ptr_array_add (update_details, g_steal_pointer (&item));
+					}
+				}
+				pk_backend_job_update_details (job, update_details);
+				pk_backend_job_finished (job);
+				return;
+			}
+			
 			for (auto &pkg : pkgs) {
 				std::string repo_id = pkg.get_repo_id();
 				if (pkg.get_install_time() > 0) repo_id = "installed";
 				std::string pid = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch() + ";" + repo_id;
 				
-				if (role == PK_ROLE_ENUM_GET_DETAILS || role == PK_ROLE_ENUM_GET_UPDATE_DETAIL) {
+				if (role == PK_ROLE_ENUM_GET_DETAILS) {
 					std::string license = pkg.get_license();
 					if (license.empty()) license = "unknown";
 					pk_backend_job_details(job, pid.c_str(), pkg.get_summary().c_str(), license.c_str(), PK_GROUP_ENUM_UNKNOWN, pkg.get_description().c_str(), pkg.get_url().c_str(), pkg.get_install_size(), pkg.get_download_size());
