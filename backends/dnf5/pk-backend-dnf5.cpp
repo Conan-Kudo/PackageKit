@@ -111,6 +111,7 @@ pk_backend_get_roles (PkBackend *backend)
         PK_ROLE_ENUM_GET_UPDATES,
         PK_ROLE_ENUM_GET_UPDATE_DETAIL,
         PK_ROLE_ENUM_WHAT_PROVIDES,
+        PK_ROLE_ENUM_CANCEL,
         -1);
     return roles;
 }
@@ -929,6 +930,11 @@ pk_backend_what_provides (PkBackend *backend,
         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
     }
     pk_backend_job_finished (job);
+}
+
+void
+pk_backend_cancel (PkBackend *backend, PkBackendJob *job)
+{
 }
 
 }
