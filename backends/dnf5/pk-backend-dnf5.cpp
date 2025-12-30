@@ -622,7 +622,7 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				return;
 			}
 			
-			if (!pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
+			if (role == PK_ROLE_ENUM_REPO_REMOVE || !pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
 				pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
 				g_debug("Starting transaction download...");
 				trans.download();
@@ -641,12 +641,15 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 					g_debug("Transaction completed successfully");
 				}
 				dnf5_setup_base (priv);
+			} else {
+				g_debug("Simulation completed, finishing job...");
 			}
 		}
 	} catch (const std::exception &e) {
 		g_warning("Exception in dnf5_repo_thread: %s", e.what());
 		pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
 	}
+	g_debug("Calling pk_backend_job_finished in dnf5_repo_thread");
 	pk_backend_job_finished (job);
 }
 
