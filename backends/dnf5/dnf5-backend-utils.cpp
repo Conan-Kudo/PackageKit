@@ -82,13 +82,8 @@ dnf5_setup_base (PkBackendDnf5Private *priv, gboolean refresh, gboolean force)
 		}
 	}
 
-	if (refresh) {
-		g_debug("Refreshing and loading enabled repositories");
-		repo_sack->update_and_load_enabled_repos(TRUE);
-	} else {
-		g_debug("Loading repositories");
-		repo_sack->load_repos();
-	}
+	g_debug("Loading repositories");
+	repo_sack->load_repos();
 
 	libdnf5::repo::RepoQuery query(*priv->base);
 	query.filter_enabled(true);
