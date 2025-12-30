@@ -1352,6 +1352,7 @@ pk_backend_install_files (PkBackend *backend,
 void
 pk_backend_cancel (PkBackend *backend, PkBackendJob *job)
 {
+
 }
 
 }
