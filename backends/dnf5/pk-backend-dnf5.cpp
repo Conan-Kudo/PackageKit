@@ -627,8 +627,46 @@ pk_backend_repo_remove (PkBackend *backend,
              return;
         }
         
-        // Download and Run
+        // Handle autoremove if requested (clean deps)
+        if (autoremove) {
+             // In libdnf5, we can try to set clean_requirements_on_remove in config
+             // or use goal actions. Goal actions seem cleaner if available.
+             // But actually, clean_requirements_on_remove is a config option usually.
+             // We can temporarily enable it.
+             auto &conf = dnf5_base->get_config();
+             auto original_clean = conf.get_clean_requirements_on_remove_option().get_value();
+             conf.get_clean_requirements_on_remove_option().set(true);
+             
+             // Re-resolve? Goal captures config at creation or resolve time?
+             // Usually better to set before goal creation.
+             // Let's create goal AFTER setting config if possible, but here we already created it.
+             // Let's create a NEW goal to be safe.
+             
+             libdnf5::Goal goal_clean(*dnf5_base);
+             for (const auto &pkg : pkgs) {
+                std::string spec = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch();
+                goal_clean.add_remove(spec);
+             }
+             auto transaction_clean = goal_clean.resolve();
+             
+             // Restore config
+             conf.get_clean_requirements_on_remove_option().set(original_clean);
+             
+             pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
+             transaction_clean.download();
+             
+             pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
+             transaction_clean.run();
+             
+             // We are done, return
+             pk_backend_job_finished (job);
+             return;
+        }
+
+        
+        // Download and Run (standard path if autoremove was false)
         pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
+        // ... (existing code follows)
         transaction.download();
         
         pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
