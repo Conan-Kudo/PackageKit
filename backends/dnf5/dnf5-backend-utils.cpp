@@ -481,12 +481,21 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				g_debug("After dnf5_apply_filters: query has %zu packages", query.size());
 			}
 			
-			for (auto p : query) {
-				if (dnf5_package_filter(p, filters))
+			// For RESOLVE, we've already applied all necessary filters via dnf5_apply_filters
+			// Don't apply dnf5_package_filter again as it causes incorrect filtering
+			if (role == PK_ROLE_ENUM_RESOLVE) {
+				for (auto p : query) {
 					results.push_back(p);
+				}
+			} else {
+				for (auto p : query) {
+					if (dnf5_package_filter(p, filters))
+						results.push_back(p);
+				}
 			}
 			g_debug("Final results: %zu packages", results.size());
 			dnf5_sort_and_emit(job, results);
+
 
 			
 		} else if (role == PK_ROLE_ENUM_DEPENDS_ON || role == PK_ROLE_ENUM_REQUIRED_BY) {
