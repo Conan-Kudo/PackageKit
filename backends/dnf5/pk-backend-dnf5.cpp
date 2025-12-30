@@ -477,7 +477,13 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 		pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
 		trans.download();
 		pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
-		trans.run();
+		auto res = trans.run();
+		g_debug("Transaction run result: %s", libdnf5::base::Transaction::transaction_result_to_string(res).c_str());
+		if (res != libdnf5::base::Transaction::TransactionRunResult::SUCCESS) {
+			std::string msg;
+			for (const auto &p : trans.get_transaction_problems()) msg += p + "; ";
+			pk_backend_job_error_code (job, PK_ERROR_ENUM_TRANSACTION_ERROR, "Transaction failed: %s", msg.c_str());
+		}
 		
 		// Post-transaction base re-initialization to ensure state consistency
 		dnf5_setup_base (priv);
@@ -618,13 +624,27 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			
 			if (!pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
 				pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
+				g_debug("Starting transaction download...");
 				trans.download();
 				pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
-				trans.run();
+				g_debug("Starting transaction execution...");
+				trans.set_description("PackageKit: repo-remove " + std::string(repo_id));
+				auto res = trans.run();
+				g_debug("Transaction run result: %s", libdnf5::base::Transaction::transaction_result_to_string(res).c_str());
+				if (res != libdnf5::base::Transaction::TransactionRunResult::SUCCESS) {
+					std::vector<std::string> problems = trans.get_transaction_problems();
+					std::string msg;
+					for (const auto &p : problems) msg += p + "; ";
+					g_warning("Transaction failed: %s", msg.c_str());
+					pk_backend_job_error_code (job, PK_ERROR_ENUM_TRANSACTION_ERROR, "Transaction failed: %s", msg.c_str());
+				} else {
+					g_debug("Transaction completed successfully");
+				}
 				dnf5_setup_base (priv);
 			}
 		}
 	} catch (const std::exception &e) {
+		g_warning("Exception in dnf5_repo_thread: %s", e.what());
 		pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
 	}
 	pk_backend_job_finished (job);
