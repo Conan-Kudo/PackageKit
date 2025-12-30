@@ -20,6 +20,7 @@
  */
 
 #include <pk-backend.h>
+#include <packagekit-glib2/pk-common-private.h>
 #include <libdnf5/base/base.hpp>
 #include <libdnf5/conf/config_parser.hpp>
 #include <libdnf5/logger/logger.hpp>
@@ -48,6 +49,7 @@
 // Private data structures
 typedef struct {
 	std::unique_ptr<libdnf5::Base> base;
+	GKeyFile *conf;
 	GMutex mutex;
 } PkBackendDnf5Private;
 
@@ -55,7 +57,29 @@ static void
 dnf5_setup_base (PkBackendDnf5Private *priv)
 {
 	priv->base = std::make_unique<libdnf5::Base>();
+
 	priv->base->load_config();
+
+	auto &config = priv->base->get_config();
+	if (priv->conf != NULL) {
+		g_autofree gchar *destdir = g_key_file_get_string (priv->conf, "Daemon", "DestDir", NULL);
+		if (destdir != NULL) {
+			config.get_installroot_option().set(libdnf5::Option::Priority::COMMANDLINE, destdir);
+		}
+
+		gboolean keep_cache = g_key_file_get_boolean (priv->conf, "Daemon", "KeepCache", NULL);
+		config.get_keepcache_option().set(libdnf5::Option::Priority::COMMANDLINE, keep_cache != FALSE);
+
+		// We still need this so system upgrades do not break
+		g_autoptr(GError) error = NULL;
+		g_autofree gchar *release_ver = pk_get_distro_version_id (&error);
+		if (release_ver != NULL) {
+			const char *root = (destdir != NULL) ? destdir : "/";
+			g_autofree gchar *cache_dir = g_build_filename (root, "/var/cache/PackageKit", release_ver, "metadata", NULL);
+			config.get_cachedir_option().set(libdnf5::Option::Priority::COMMANDLINE, cache_dir);
+		}
+	}
+
 	priv->base->setup();
 	auto repo_sack = priv->base->get_repo_sack();
 	repo_sack->create_repos_from_system_configuration();
@@ -823,6 +847,7 @@ pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
 {
 	PkBackendDnf5Private *priv = g_new0 (PkBackendDnf5Private, 1);
 	g_mutex_init (&priv->mutex);
+	priv->conf = g_key_file_ref (conf);
 	try {
 		dnf5_setup_base (priv);
 	} catch (const std::exception &e) {
@@ -836,6 +861,8 @@ pk_backend_destroy (PkBackend *backend)
 {
 	PkBackendDnf5Private *priv = (PkBackendDnf5Private *) pk_backend_get_user_data (backend);
 	priv->base.reset();
+	if (priv->conf != NULL)
+		g_key_file_unref (priv->conf);
 	g_mutex_clear (&priv->mutex);
 	g_free (priv);
 }
