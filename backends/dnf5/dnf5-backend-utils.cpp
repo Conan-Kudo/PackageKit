@@ -40,7 +40,7 @@
 #include "dnf5-backend-vendor.hpp"
 
 void
-dnf5_setup_base (PkBackendDnf5Private *priv, gboolean refresh, gboolean force)
+dnf5_setup_base (PkBackendDnf5Private *priv, gboolean refresh, gboolean force, const char *releasever)
 {
 	priv->base = std::make_unique<libdnf5::Base>();
 
@@ -56,12 +56,18 @@ dnf5_setup_base (PkBackendDnf5Private *priv, gboolean refresh, gboolean force)
 		gboolean keep_cache = g_key_file_get_boolean (priv->conf, "Daemon", "KeepCache", NULL);
 		config.get_keepcache_option().set(libdnf5::Option::Priority::COMMANDLINE, keep_cache != FALSE);
 
-		g_autoptr(GError) error = NULL;
-		g_autofree gchar *release_ver = pk_get_distro_version_id (&error);
-		if (release_ver != NULL) {
-			priv->base->get_vars()->set("releasever", release_ver);
+		g_autofree gchar *distro_version = NULL;
+		if (releasever == NULL) {
+			g_autoptr(GError) error = NULL;
+			distro_version = pk_get_distro_version_id (&error);
+		} else {
+			distro_version = g_strdup(releasever);
+		}
+
+		if (distro_version != NULL) {
+			priv->base->get_vars()->set("releasever", distro_version);
 			const char *root = (destdir != NULL) ? destdir : "/";
-			g_autofree gchar *cache_dir = g_build_filename (root, "/var/cache/PackageKit", release_ver, "metadata", NULL);
+			g_autofree gchar *cache_dir = g_build_filename (root, "/var/cache/PackageKit", distro_version, "metadata", NULL);
 			g_debug("Using cachedir: %s", cache_dir);
 			config.get_cachedir_option().set(libdnf5::Option::Priority::COMMANDLINE, cache_dir);
 		}
@@ -737,6 +743,15 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&priv->mutex);
 	
 	try {
+		if (role == PK_ROLE_ENUM_UPGRADE_SYSTEM) {
+			gchar *distro_id = NULL;
+			PkUpgradeKindEnum upgrade_kind;
+			PkBitfield transaction_flags;
+			g_variant_get (params, "(t&su)", &transaction_flags, &distro_id, &upgrade_kind);
+			if (distro_id)
+				dnf5_setup_base(priv, FALSE, FALSE, distro_id);
+		}
+
 		libdnf5::Goal goal(*priv->base);
 		PkBitfield transaction_flags = 0;
 		
@@ -777,10 +792,7 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			auto added = priv->base->get_repo_sack()->add_cmdline_packages(paths);
 			for (const auto &p : added) goal.add_rpm_install(p.second);
 		} else if (role == PK_ROLE_ENUM_UPGRADE_SYSTEM) {
-			gchar *distro_id = NULL;
-			PkUpgradeKindEnum upgrade_kind;
-			g_variant_get (params, "(t&su)", &transaction_flags, &distro_id, &upgrade_kind);
-			if (distro_id) priv->base->get_vars()->set("releasever", distro_id);
+			g_variant_get (params, "(t)", &transaction_flags);
 			goal.add_rpm_distro_sync();
 		} else if (role == PK_ROLE_ENUM_REPAIR_SYSTEM) {
 			g_variant_get (params, "(t)", &transaction_flags);
