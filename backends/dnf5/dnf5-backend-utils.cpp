@@ -827,6 +827,11 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			pk_backend_job_finished (job);
 			return;
 		}
+
+		g_debug("Resolved transaction has %zu packages", trans.get_transaction_packages().size());
+		for (const auto &item : trans.get_transaction_packages()) {
+			g_debug("Transaction item: %s - %d", item.get_package().get_name().c_str(), (int)item.get_action());
+		}
 		
 		if (pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
 			for (const auto &item : trans.get_transaction_packages()) {
