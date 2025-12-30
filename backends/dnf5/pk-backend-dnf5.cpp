@@ -1465,22 +1465,43 @@ pk_backend_remove_packages (PkBackend *backend,
     pk_backend_job_set_status (job, PK_STATUS_ENUM_QUERY);
 
     try {
-        // Resolve package IDs
-        std::vector<libdnf5::rpm::Package> pkgs = dnf5_resolve_package_ids(package_ids);
-        if (pkgs.empty()) {
-            pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_FOUND, "No packages found");
-            pk_backend_job_finished (job);
-            return;
+        std::vector<libdnf5::rpm::Package> pkgs;
+        libdnf5::rpm::PackageQuery query(*dnf5_base);
+
+        for (int i = 0; package_ids[i] != NULL; i++) {
+            gchar **split = pk_package_id_split(package_ids[i]);
+            if (!split) continue;
+
+            const char *name = split[PK_PACKAGE_ID_NAME];
+            const char *version = split[PK_PACKAGE_ID_VERSION];
+            const char *arch = split[PK_PACKAGE_ID_ARCH];
+
+            libdnf5::rpm::PackageQuery pkg_query(*dnf5_base);
+            pkg_query.filter_installed();
+            pkg_query.filter_name(name);
+            pkg_query.filter_evr(version);
+            pkg_query.filter_arch(arch);
+
+            if (pkg_query.begin() == pkg_query.end()) {
+                pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_INSTALLED, 
+                                          "Package %s-%s.%s is not installed", name, version, arch);
+                g_strfreev(split);
+                pk_backend_job_finished (job);
+                return;
+            }
+            
+            // Add the found package
+            for (const auto &pkg : pkg_query) {
+                pkgs.push_back(pkg);
+                break; // Just take the first one if multiple (unlikely for NEVRA)
+            }
+            g_strfreev(split);
         }
 
-        // Check if packages are installed
-        for (const auto &pkg : pkgs) {
-             if (pkg.get_install_time() == 0) {
-                 pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_INSTALLED, 
-                                           "Package %s is not installed", pkg.get_name().c_str());
-                 pk_backend_job_finished (job);
-                 return;
-             }
+        if (pkgs.empty()) {
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_FOUND, "No valid packages found for removal");
+            pk_backend_job_finished (job);
+            return;
         }
 
         // Create goal and add packages for removal
@@ -1492,6 +1513,7 @@ pk_backend_remove_packages (PkBackend *backend,
 
         // Resolve transaction
         auto transaction = goal.resolve();
+
 
         // Check for transaction problems
         auto problems = transaction.get_transaction_problems();
