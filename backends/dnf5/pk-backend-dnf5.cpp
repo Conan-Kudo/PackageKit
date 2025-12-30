@@ -540,16 +540,39 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 				return;
 			}
 			
+			// Find all repos in the same file to track all packages that should be removed
+			std::vector<std::string> all_repo_ids;
+			libdnf5::repo::RepoQuery all_repos_query(*priv->base);
+			for (auto repo : all_repos_query) {
+				if (repo->get_repo_file_path() == repo_file) {
+					all_repo_ids.push_back(repo->get_id());
+				}
+			}
+
 			libdnf5::Goal goal(*priv->base);
-			libdnf5::rpm::PackageQuery pkg_query(*priv->base);
-			pkg_query.filter_installed();
-			pkg_query.filter_file(repo_file);
 			
-			for (auto pkg : pkg_query) {
-				goal.add_remove(pkg.get_name());
+			// Remove the owner package(s) of the repo file
+			libdnf5::rpm::PackageQuery owner_query(*priv->base);
+			owner_query.filter_installed();
+			owner_query.filter_file({repo_file});
+			for (auto pkg : owner_query) {
+				goal.add_remove(pkg.get_full_nevra());
 			}
 			
+			// If autoremove is true, also remove packages installed from these repos
 			if (autoremove) {
+				libdnf5::rpm::PackageQuery inst_query(*priv->base);
+				inst_query.filter_installed();
+				for (auto pkg : inst_query) {
+					std::string from_repo = pkg.get_from_repo_id();
+					for (const auto &id : all_repo_ids) {
+						if (from_repo == id) {
+							goal.add_remove(pkg.get_full_nevra());
+							break;
+						}
+					}
+				}
+				// Also enable unused dependency removal
 				priv->base->get_config().get_clean_requirements_on_remove_option().set(true);
 			}
 			
