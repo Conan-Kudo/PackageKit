@@ -121,6 +121,20 @@ dnf5_update_severity_to_enum (const std::string &severity)
 // Helper functions (Internal)
 
 static bool
+dnf5_force_distupgrade_on_upgrade (libdnf5::Base &base)
+{
+	std::vector<std::string> distroverpkg_names = { "system-release", "distribution-release" };
+	std::vector<std::string> distupgrade_provides = { "system-upgrade(dsync)", "product-upgrade() = dup" };
+
+	libdnf5::rpm::PackageQuery query(base);
+	query.filter_installed();
+	query.filter_name(distroverpkg_names);
+	query.filter_provides(distupgrade_provides);
+
+	return !query.empty();
+}
+
+static bool
 dnf5_repo_is_devel (const libdnf5::repo::Repo &repo)
 {
 	std::string id = repo.get_id();
@@ -437,7 +451,10 @@ dnf5_query_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			
 			if (role == PK_ROLE_ENUM_GET_UPDATES) {
 				libdnf5::Goal goal(*priv->base);
-				goal.add_rpm_upgrade();
+				if (dnf5_force_distupgrade_on_upgrade (*priv->base))
+					goal.add_rpm_distro_sync();
+				else
+					goal.add_rpm_upgrade();
 				auto trans = goal.resolve();
 				
 				std::vector<libdnf5::rpm::Package> update_pkgs;
@@ -669,7 +686,12 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 				else if (role == PK_ROLE_ENUM_REMOVE_PACKAGES) goal.add_remove(spec);
 				else if (role == PK_ROLE_ENUM_UPDATE_PACKAGES) goal.add_rpm_upgrade(spec);
 			}
-			if (role == PK_ROLE_ENUM_UPDATE_PACKAGES && pkgs.empty()) goal.add_rpm_upgrade();
+			if (role == PK_ROLE_ENUM_UPDATE_PACKAGES && pkgs.empty()) {
+				if (dnf5_force_distupgrade_on_upgrade (*priv->base))
+					goal.add_rpm_distro_sync();
+				else
+					goal.add_rpm_upgrade();
+			}
 			
 		} else if (role == PK_ROLE_ENUM_INSTALL_FILES) {
 			g_auto(GStrv) full_paths = NULL;
