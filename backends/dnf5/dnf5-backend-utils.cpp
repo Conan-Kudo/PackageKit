@@ -792,7 +792,9 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			auto added = priv->base->get_repo_sack()->add_cmdline_packages(paths);
 			for (const auto &p : added) goal.add_rpm_install(p.second);
 		} else if (role == PK_ROLE_ENUM_UPGRADE_SYSTEM) {
-			g_variant_get (params, "(t)", &transaction_flags);
+			const gchar *distro_id = NULL;
+			PkUpgradeKindEnum upgrade_kind;
+			g_variant_get (params, "(t&su)", &transaction_flags, &distro_id, &upgrade_kind);
 			goal.add_rpm_distro_sync();
 		} else if (role == PK_ROLE_ENUM_REPAIR_SYSTEM) {
 			g_variant_get (params, "(t)", &transaction_flags);
