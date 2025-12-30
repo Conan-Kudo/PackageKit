@@ -56,12 +56,13 @@ dnf5_setup_base (PkBackendDnf5Private *priv, gboolean refresh, gboolean force)
 		gboolean keep_cache = g_key_file_get_boolean (priv->conf, "Daemon", "KeepCache", NULL);
 		config.get_keepcache_option().set(libdnf5::Option::Priority::COMMANDLINE, keep_cache != FALSE);
 
-		// We still need this so system upgrades do not break
 		g_autoptr(GError) error = NULL;
 		g_autofree gchar *release_ver = pk_get_distro_version_id (&error);
 		if (release_ver != NULL) {
+			priv->base->get_vars()->set("releasever", release_ver);
 			const char *root = (destdir != NULL) ? destdir : "/";
 			g_autofree gchar *cache_dir = g_build_filename (root, "/var/cache/PackageKit", release_ver, "metadata", NULL);
+			g_debug("Using cachedir: %s", cache_dir);
 			config.get_cachedir_option().set(libdnf5::Option::Priority::COMMANDLINE, cache_dir);
 		}
 	}
@@ -75,12 +76,25 @@ dnf5_setup_base (PkBackendDnf5Private *priv, gboolean refresh, gboolean force)
 		libdnf5::repo::RepoQuery query(*priv->base);
 		for (auto repo : query) {
 			if (repo->is_enabled()) {
+				g_debug("Expiring repository metadata: %s", repo->get_id().c_str());
 				repo->expire();
 			}
 		}
 	}
 
-	repo_sack->load_repos();
+	if (refresh) {
+		g_debug("Refreshing and loading enabled repositories");
+		repo_sack->update_and_load_enabled_repos(TRUE);
+	} else {
+		g_debug("Loading repositories");
+		repo_sack->load_repos();
+	}
+
+	libdnf5::repo::RepoQuery query(*priv->base);
+	query.filter_enabled(true);
+	for (auto repo : query) {
+		g_debug("Enabled repository: %s", repo->get_id().c_str());
+	}
 }
 
 void
@@ -339,6 +353,9 @@ dnf5_resolve_package_ids(libdnf5::Base &base, gchar **package_ids)
 		
 		try {
 			libdnf5::rpm::PackageQuery query(base);
+			g_debug("Resolving package ID: name=%s, version=%s, arch=%s, repo=%s",
+				split[PK_PACKAGE_ID_NAME], split[PK_PACKAGE_ID_VERSION],
+				split[PK_PACKAGE_ID_ARCH], split[PK_PACKAGE_ID_DATA]);
 			query.filter_name(split[PK_PACKAGE_ID_NAME]);
 			query.filter_evr(split[PK_PACKAGE_ID_VERSION]);
 			query.filter_arch(split[PK_PACKAGE_ID_ARCH]);
