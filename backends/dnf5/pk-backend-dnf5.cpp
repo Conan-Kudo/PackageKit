@@ -486,8 +486,33 @@ pk_backend_repo_set_data (PkBackend *backend,
                       repo->disable();
                   }
                   
-                  // We need to persist this change.
-                  // TODO: Use RepoWriter or configuration write method when identified.
+                  // Persist this change using ConfigParser
+                  try {
+                      std::string repofile = repo->get_repo_file_path();
+                      if (repofile.empty()) {
+                          pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Repo %s has no file path", repo_id);
+                          pk_backend_job_finished (job);
+                          return;
+                      }
+
+                      libdnf5::ConfigParser parser;
+                      parser.read(repofile);
+                      
+                      // Update value
+                      parser.set_value(repo_id, "enabled", enable ? "1" : "0");
+                      
+                      // Write back (false = overwrite/update, not append-only mode that creates new file, but check docs)
+                      // ConfigParser::write(path, append)
+                      // If append is true, it appends. We want to overwrite the file with updated data.
+                      // TODO: evaluate append-only mode and use that by default eventually
+                      parser.write(repofile, false);
+                      
+                  } catch (const std::exception &e) {
+                      pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, 
+                                                "Failed to write repo config: %s", e.what());
+                      pk_backend_job_finished (job);
+                      return;
+                  }
              } else {
                   pk_backend_job_error_code (job, PK_ERROR_ENUM_NOT_SUPPORTED, 
                                             "Only 'enabled' parameter is supported");
