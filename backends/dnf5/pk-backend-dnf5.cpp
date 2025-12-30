@@ -556,7 +556,8 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 			owner_query.filter_installed();
 			owner_query.filter_file({repo_file});
 			for (auto pkg : owner_query) {
-				goal.add_remove(pkg.get_full_nevra());
+				std::string spec = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch();
+				goal.add_remove(spec);
 			}
 			
 			// If autoremove is true, also remove packages installed from these repos
@@ -567,7 +568,8 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 					std::string from_repo = pkg.get_from_repo_id();
 					for (const auto &id : all_repo_ids) {
 						if (from_repo == id) {
-							goal.add_remove(pkg.get_full_nevra());
+							std::string spec = pkg.get_name() + "-" + pkg.get_evr() + "." + pkg.get_arch();
+							goal.add_remove(spec);
 							break;
 						}
 					}
@@ -591,6 +593,8 @@ dnf5_repo_thread (PkBackendJob *job, GVariant *params, gpointer user_data)
 					dnf5_emit_pkg(job, item.get_package());
 				}
 			} else {
+				pk_backend_job_set_status (job, PK_STATUS_ENUM_DOWNLOAD);
+				trans.download();
 				pk_backend_job_set_status (job, PK_STATUS_ENUM_RUNNING);
 				trans.run();
 				dnf5_setup_base (priv);
