@@ -29,9 +29,11 @@
 #include <libdnf5/repo/package_downloader.hpp>
 #include <libdnf5/base/goal.hpp>
 #include <libdnf5/advisory/advisory_query.hpp>
+#include <libdnf5/rpm/reldep_list.hpp>
 #include <algorithm>
 #include <vector>
 #include <set>
+#include <queue>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -99,6 +101,7 @@ pk_backend_get_roles (PkBackend *backend)
 {
     PkBitfield roles;
     roles = pk_bitfield_from_enums (
+        PK_ROLE_ENUM_DEPENDS_ON,
         PK_ROLE_ENUM_DOWNLOAD_PACKAGES,
         PK_ROLE_ENUM_GET_DETAILS,
         PK_ROLE_ENUM_GET_DETAILS_LOCAL,
@@ -106,6 +109,7 @@ pk_backend_get_roles (PkBackend *backend)
         PK_ROLE_ENUM_GET_FILES_LOCAL,
         PK_ROLE_ENUM_GET_PACKAGES,
         PK_ROLE_ENUM_GET_REPO_LIST,
+        PK_ROLE_ENUM_REQUIRED_BY,
         PK_ROLE_ENUM_RESOLVE,
         PK_ROLE_ENUM_REFRESH_CACHE,
         PK_ROLE_ENUM_GET_UPDATES,
@@ -927,6 +931,203 @@ pk_backend_what_provides (PkBackend *backend,
         dnf5_sort_and_emit(job, pkg_vector);
 
     } catch (const std::exception &e) {
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+// Helper function to process dependencies or reverse dependencies
+static std::vector<libdnf5::rpm::Package>
+dnf5_process_dependency (const libdnf5::rpm::Package &pkg, PkRoleEnum role, gboolean recursive)
+{
+    std::vector<libdnf5::rpm::Package> results;
+    std::set<std::string> visited;
+    std::queue<libdnf5::rpm::Package> queue;
+    
+    // Start with the given package
+    queue.push(pkg);
+    
+    // Mark the start package as visited so we don't process it again
+    std::string start_nevra = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch();
+    visited.insert(start_nevra);
+    
+    while (!queue.empty()) {
+        auto curr = queue.front();
+        queue.pop();
+        
+        // Get the reldep list based on role
+        libdnf5::rpm::ReldepList reldeps(*dnf5_base);
+        if (role == PK_ROLE_ENUM_DEPENDS_ON) {
+            reldeps = curr.get_requires();
+        } else {
+            reldeps = curr.get_provides();
+        }
+        
+        // Process each reldep
+        for (const auto &reldep : reldeps) {
+            std::string req = reldep.to_string();
+            
+            // Create a query to find packages that satisfy this requirement
+            libdnf5::rpm::PackageQuery query(*dnf5_base);
+            
+            if (role == PK_ROLE_ENUM_DEPENDS_ON) {
+                // Find packages that provide the requirement
+                query.filter_provides(req);
+            } else {
+                // Find packages that require this provided capability
+                query.filter_requires(req);
+            }
+            
+            // Process matching packages
+            for (const auto &res : query) {
+                std::string res_nevra = res.get_name() + ";" + res.get_evr() + ";" + res.get_arch();
+                
+                // Ignore self-referential dependencies
+                std::string curr_nevra = curr.get_name() + ";" + curr.get_evr() + ";" + curr.get_arch();
+                if (res_nevra == curr_nevra) {
+                    continue;
+                }
+                
+                // If not visited, add to results
+                if (visited.find(res_nevra) == visited.end()) {
+                    visited.insert(res_nevra);
+                    results.push_back(res);
+                    
+                    // If recursive, add to queue for further processing
+                    if (recursive) {
+                        queue.push(res);
+                    }
+                }
+            }
+        }
+    }
+    
+    return results;
+}
+
+void
+pk_backend_depends_on (PkBackend *backend, PkBackendJob *job, PkBitfield filters, gchar **package_ids, gboolean recursive)
+{
+    g_debug ("PkBackendDnf5: depends_on recursive=%d", recursive);
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+        
+        // Resolve package IDs
+        auto pkgs = dnf5_resolve_package_ids(package_ids);
+        if (pkgs.empty()) {
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_FOUND, "Failed to find packages");
+            pk_backend_job_finished (job);
+            return;
+        }
+        
+        // Process dependencies for each package
+        std::vector<libdnf5::rpm::Package> all_results;
+        for (auto &pkg : pkgs) {
+            auto results = dnf5_process_dependency(pkg, PK_ROLE_ENUM_DEPENDS_ON, recursive);
+            all_results.insert(all_results.end(), results.begin(), results.end());
+        }
+        
+        // Apply filters
+        if (!all_results.empty()) {
+            // Create a query with all results and apply filters
+            std::set<std::string> result_nevras;
+            std::vector<libdnf5::rpm::Package> filtered_results;
+            
+            libdnf5::rpm::PackageQuery filter_query(*dnf5_base);
+            dnf5_apply_filters(filter_query, filters);
+            
+            // Create a set of filtered package NEVRAs for fast lookup
+            std::set<std::string> filtered_nevras;
+            for (const auto &pkg : filter_query) {
+                std::string nevra = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch();
+                filtered_nevras.insert(nevra);
+            }
+            
+            // Only include results that pass the filter
+            for (auto &pkg : all_results) {
+                std::string nevra = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch();
+                if (filtered_nevras.find(nevra) != filtered_nevras.end()) {
+                    if (result_nevras.find(nevra) == result_nevras.end()) {
+                        result_nevras.insert(nevra);
+                        filtered_results.push_back(pkg);
+                    }
+                }
+            }
+            
+            dnf5_sort_and_emit(job, filtered_results);
+        }
+        
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: DependsOn failed: %s", e.what());
+        pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
+    }
+    pk_backend_job_finished (job);
+}
+
+void
+pk_backend_required_by (PkBackend *backend, PkBackendJob *job, PkBitfield filters, gchar **package_ids, gboolean recursive)
+{
+    g_debug ("PkBackendDnf5: required_by recursive=%d", recursive);
+    try {
+        std::lock_guard<std::mutex> lock(dnf5_mutex);
+        if (!dnf5_base) {
+             pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "Backend not initialized");
+             pk_backend_job_finished (job);
+             return;
+        }
+        
+        // Resolve package IDs
+        auto pkgs = dnf5_resolve_package_ids(package_ids);
+        if (pkgs.empty()) {
+            pk_backend_job_error_code (job, PK_ERROR_ENUM_PACKAGE_NOT_FOUND, "Failed to find packages");
+            pk_backend_job_finished (job);
+            return;
+        }
+        
+        // Process reverse dependencies for each package
+        std::vector<libdnf5::rpm::Package> all_results;
+        for (auto &pkg : pkgs) {
+            auto results = dnf5_process_dependency(pkg, PK_ROLE_ENUM_REQUIRED_BY, recursive);
+            all_results.insert(all_results.end(), results.begin(), results.end());
+        }
+        
+        // Apply filters
+        if (!all_results.empty()) {
+            // Create a query with all results and apply filters
+            std::set<std::string> result_nevras;
+            std::vector<libdnf5::rpm::Package> filtered_results;
+            
+            libdnf5::rpm::PackageQuery filter_query(*dnf5_base);
+            dnf5_apply_filters(filter_query, filters);
+            
+            // Create a set of filtered package NEVRAs for fast lookup
+            std::set<std::string> filtered_nevras;
+            for (const auto &pkg : filter_query) {
+                std::string nevra = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch();
+                filtered_nevras.insert(nevra);
+            }
+            
+            // Only include results that pass the filter
+            for (auto &pkg : all_results) {
+                std::string nevra = pkg.get_name() + ";" + pkg.get_evr() + ";" + pkg.get_arch();
+                if (filtered_nevras.find(nevra) != filtered_nevras.end()) {
+                    if (result_nevras.find(nevra) == result_nevras.end()) {
+                        result_nevras.insert(nevra);
+                        filtered_results.push_back(pkg);
+                    }
+                }
+            }
+            
+            dnf5_sort_and_emit(job, filtered_results);
+        }
+        
+    } catch (const std::exception &e) {
+        g_warning ("PkBackendDnf5: RequiredBy failed: %s", e.what());
         pk_backend_job_error_code (job, PK_ERROR_ENUM_INTERNAL_ERROR, "%s", e.what());
     }
     pk_backend_job_finished (job);
