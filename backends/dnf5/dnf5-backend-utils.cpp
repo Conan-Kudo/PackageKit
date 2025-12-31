@@ -133,7 +133,7 @@ dnf5_advisory_kind_to_info_enum (const std::string &type)
 		return PK_INFO_ENUM_ENHANCEMENT;
 	if (type == "newpackage")
 		return PK_INFO_ENUM_NORMAL;
-	return PK_INFO_ENUM_NORMAL;
+	return PK_INFO_ENUM_UNKNOWN;
 }
 
 PkInfoEnum
