@@ -755,12 +755,19 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 				dnf5_setup_base(priv, TRUE, TRUE, distro_id);
 				
 				g_debug("Checking repositories for system upgrade to %s:", distro_id);
+				// ... logging code ...
 				libdnf5::repo::RepoQuery query(*priv->base);
 				for (auto repo : query) {
-					g_debug("Repo %s: enabled=%d",
+					// Check if baseurl contains the correct version
+					auto baseurl = repo->get_config().get_baseurl_option().get_value();
+					std::string url_str = baseurl.empty() ? "null" : baseurl[0];
+					g_debug("Repo %s: enabled=%d, url=%s",
 						repo->get_id().c_str(),
-						repo->is_enabled());
+						repo->is_enabled(),
+						url_str.c_str());
 				}
+				
+				// EXPERIMENT: Switch to upgrade instead of distro_sync is handled below
 			}
 		}
 
@@ -807,7 +814,11 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			const gchar *distro_id = NULL;
 			PkUpgradeKindEnum upgrade_kind;
 			g_variant_get (params, "(t&su)", &transaction_flags, &distro_id, &upgrade_kind);
-			goal.add_rpm_distro_sync();
+			
+			// EXPERIMENT: Use upgrade instead of distro-sync to see if it generates a transaction
+			g_debug("Using add_rpm_upgrade() for system upgrade");
+			goal.add_rpm_upgrade();
+			// goal.add_rpm_distro_sync();
 		} else if (role == PK_ROLE_ENUM_REPAIR_SYSTEM) {
 			g_variant_get (params, "(t)", &transaction_flags);
 			if (pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
