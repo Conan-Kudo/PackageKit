@@ -829,7 +829,13 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			const gchar *distro_id = NULL;
 			PkUpgradeKindEnum upgrade_kind;
 			g_variant_get (params, "(t&su)", &transaction_flags, &distro_id, &upgrade_kind);
-			goal.add_rpm_distro_sync();
+			
+			// Use add_rpm_upgrade() because distro-sync is too strict and often results in empty transaction
+			// if allow_erasing/best options are not set (and we can't easily set them via current API).
+			// Since we fixed the releasever issue, upgrade() should correctly pick up F44 packages.
+			g_debug("Using add_rpm_upgrade() for system upgrade to %s", distro_id);
+			goal.add_rpm_upgrade();
+			// goal.add_rpm_distro_sync();
 		} else if (role == PK_ROLE_ENUM_REPAIR_SYSTEM) {
 			g_variant_get (params, "(t)", &transaction_flags);
 			if (pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
