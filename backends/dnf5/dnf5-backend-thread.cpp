@@ -21,6 +21,8 @@
 #include "dnf5-backend-thread.hpp"
 #include "dnf5-backend-utils.hpp"
 #include <libdnf5/base/goal.hpp>
+#include <libdnf5/comps/environment/query.hpp>
+#include <libdnf5/comps/group/query.hpp>
 #include <libdnf5/advisory/advisory_query.hpp>
 #include <libdnf5/rpm/reldep_list.hpp>
 #include <libdnf5/base/transaction.hpp>
@@ -30,9 +32,6 @@
 #include <packagekit-glib2/pk-update-detail.h>
 #include <rpm/rpmlib.h>
 #include <glib/gstdio.h>
-#include <algorithm>
-#include <set>
-#include <queue>
 #include <filesystem>
 #include <map>
 
@@ -432,6 +431,17 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			// and downgrades if necessary to match repo versions.
 			goal.set_allow_erasing(true);
 			goal.add_rpm_distro_sync();
+			// System upgrades require processing groups to be upgraded
+			libdnf5::comps::GroupQuery q_groups(*priv->base);
+			q_groups.filter_installed(true);
+			for (const auto & grp : q_groups) {
+				goal.add_group_upgrade(grp.get_groupid());
+			}
+			libdnf5::comps::EnvironmentQuery q_environments(*priv->base);
+			q_environments.filter_installed(true);
+			for (const auto & env : q_environments) {
+				goal.add_group_upgrade(env.get_environmentid());
+            }
 		} else if (role == PK_ROLE_ENUM_REPAIR_SYSTEM) {
 			g_variant_get (params, "(t)", &transaction_flags);
 			if (pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
