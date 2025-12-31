@@ -77,6 +77,21 @@ dnf5_setup_base (PkBackendDnf5Private *priv, gboolean refresh, gboolean force, c
 	}
 
 	priv->base->setup();
+	
+	// Ensure releasever is set AFTER setup() because setup() might run auto-detection and overwrite it.
+	if (priv->conf != NULL) {
+		g_autofree gchar *distro_version = NULL;
+		if (releasever == NULL) {
+			g_autoptr(GError) error = NULL;
+			distro_version = pk_get_distro_version_id (&error);
+		} else {
+			distro_version = g_strdup(releasever);
+		}
+		if (distro_version != NULL) {
+			priv->base->get_vars()->set("releasever", distro_version);
+		}
+	}
+	
 	auto repo_sack = priv->base->get_repo_sack();
 	repo_sack->create_repos_from_system_configuration();
 	repo_sack->get_system_repo();
@@ -814,11 +829,7 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			const gchar *distro_id = NULL;
 			PkUpgradeKindEnum upgrade_kind;
 			g_variant_get (params, "(t&su)", &transaction_flags, &distro_id, &upgrade_kind);
-			
-			// EXPERIMENT: Use upgrade instead of distro-sync to see if it generates a transaction
-			g_debug("Using add_rpm_upgrade() for system upgrade");
-			goal.add_rpm_upgrade();
-			// goal.add_rpm_distro_sync();
+			goal.add_rpm_distro_sync();
 		} else if (role == PK_ROLE_ENUM_REPAIR_SYSTEM) {
 			g_variant_get (params, "(t)", &transaction_flags);
 			if (pk_bitfield_contain (transaction_flags, PK_TRANSACTION_FLAG_ENUM_SIMULATE)) {
