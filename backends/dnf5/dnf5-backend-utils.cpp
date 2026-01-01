@@ -22,6 +22,7 @@
 #include <packagekit-glib2/pk-common-private.h>
 #include <packagekit-glib2/pk-update-detail.h>
 #include <libdnf5/conf/config_parser.hpp>
+#include <libdnf5/conf/const.hpp>
 #include <libdnf5/logger/logger.hpp>
 #include <libdnf5/rpm/arch.hpp>
 #include <libdnf5/repo/package_downloader.hpp>
@@ -70,6 +71,9 @@ dnf5_setup_base (PkBackendDnf5Private *priv, gboolean refresh, gboolean force, c
 			g_debug("Using cachedir: %s", cache_dir);
 			config.get_cachedir_option().set(libdnf5::Option::Priority::COMMANDLINE, cache_dir);
 		}
+
+		// Ensure AppStream repodata is downloaded
+		config.get_optional_metadata_types_option().add_item(libdnf5::Option::Priority::RUNTIME, libdnf5::METADATA_TYPE_APPSTREAM);
 		
 		// Always assume yes to avoid interactive prompts failing the transaction
 		// TODO: Drop this once InstallSignature is implemented
