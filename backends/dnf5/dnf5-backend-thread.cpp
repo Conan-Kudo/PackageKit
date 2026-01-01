@@ -480,12 +480,14 @@ dnf5_transaction_thread (PkBackendJob *job, GVariant *params, gpointer user_data
 			for (const auto &item : trans.get_transaction_packages()) {
 				auto action = item.get_action();
 				PkInfoEnum info = PK_INFO_ENUM_UNKNOWN;
-				if (action == libdnf5::transaction::TransactionItemAction::INSTALL || action == libdnf5::transaction::TransactionItemAction::UPGRADE) info = PK_INFO_ENUM_INSTALLING;
-				else if (action == libdnf5::transaction::TransactionItemAction::REMOVE || action == libdnf5::transaction::TransactionItemAction::REPLACED) info = PK_INFO_ENUM_REMOVING;
+				if (action == libdnf5::transaction::TransactionItemAction::INSTALL) info = PK_INFO_ENUM_INSTALLING;
+				else if (action == libdnf5::transaction::TransactionItemAction::UPGRADE) info = PK_INFO_ENUM_UPDATING;
+				else if (action == libdnf5::transaction::TransactionItemAction::REMOVE) info = PK_INFO_ENUM_REMOVING;
 				else if (action == libdnf5::transaction::TransactionItemAction::REINSTALL) info = PK_INFO_ENUM_REINSTALLING;
 				else if (action == libdnf5::transaction::TransactionItemAction::DOWNGRADE) info = PK_INFO_ENUM_DOWNGRADING;
 				
-				dnf5_emit_pkg(job, item.get_package(), info);
+				if (info != PK_INFO_ENUM_UNKNOWN)
+					dnf5_emit_pkg(job, item.get_package(), info);
 			}
 			pk_backend_job_finished (job);
 			return;
