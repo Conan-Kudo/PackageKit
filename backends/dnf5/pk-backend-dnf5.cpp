@@ -19,6 +19,7 @@
  * along with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "pk-backend.h"
 #include "dnf5-backend-utils.hpp"
 #include "dnf5-backend-thread.hpp"
 #include <packagekit-glib2/pk-common-private.h>
@@ -100,6 +101,26 @@ pk_backend_context_invalidate_cb (PkBackend *backend, PkBackend *backend_data)
 	dnf5_setup_base (priv);
 }
 
+static void
+pk_backend_dnf5_rpm_dbus_signal_cb (GDBusConnection *connection,
+		    const gchar *sender_name,
+		    const gchar *object_path,
+		    const gchar *interface_name,
+		    const gchar *signal_name,
+		    GVariant *parameters,
+		    gpointer user_data)
+{
+	PkBackend *backend = PK_BACKEND (user_data);
+
+	/* We only care if the transaction ended or packages changed */
+	/* The rpm-plugin-dbus-announce sends StartTransaction and EndTransaction */
+	/* We only care about EndTransaction to trigger a refresh */
+	/* On EndTransaction, emit updates-change. pk-engine will notify
+	 *  clients, and pk_backend_context_invalidate_cb will run. */
+	if (g_strcmp0 (signal_name, "EndTransaction") == 0)
+		pk_backend_updates_changed (backend);
+}
+
 void
 pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
 {
@@ -134,6 +155,18 @@ pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
 		dnf5_setup_base (priv);
 		g_signal_connect (backend, "updates-changed",
 				  G_CALLBACK (pk_backend_context_invalidate_cb), backend);
+
+		/* subscribe to RPM DBus announcements */
+		priv->rpm_dbus_sub_id = g_dbus_connection_signal_subscribe (g_bus_get_sync (G_BUS_TYPE_SYSTEM, NULL, NULL),
+									"org.rpm.announce",
+									"org.rpm.Transaction",
+									NULL,
+									"/org/rpm/Transaction",
+									NULL,
+									G_DBUS_SIGNAL_FLAGS_NONE,
+									pk_backend_dnf5_rpm_dbus_signal_cb,
+									backend,
+									NULL);
 	} catch (const std::exception &e) {
 		g_warning ("Init failed: %s", e.what());
 	}
@@ -143,6 +176,10 @@ void
 pk_backend_destroy (PkBackend *backend)
 {
 	PkBackendDnf5Private *priv = (PkBackendDnf5Private *) pk_backend_get_user_data (backend);
+	if (priv->rpm_dbus_sub_id > 0) {
+		g_dbus_connection_signal_unsubscribe (g_bus_get_sync (G_BUS_TYPE_SYSTEM, NULL, NULL),
+						      priv->rpm_dbus_sub_id);
+	}
 	priv->base.reset();
 	if (priv->conf != NULL)
 		g_key_file_unref (priv->conf);
