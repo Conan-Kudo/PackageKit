@@ -27,6 +27,7 @@
 #include <libdnf5/repo/download_callbacks.hpp>
 #include <libdnf5/rpm/transaction_callbacks.hpp>
 #include <glib.h>
+#include <gio/gio.h>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -37,6 +38,7 @@ typedef struct {
 	std::unique_ptr<libdnf5::Base> base;
 	GKeyFile *conf;
 	GMutex mutex;
+	guint rpm_dbus_sub_id;
 } PkBackendDnf5Private;
 
 void dnf5_setup_base(PkBackendDnf5Private *priv, gboolean refresh = FALSE, gboolean force = FALSE, const char *releasever = nullptr);
