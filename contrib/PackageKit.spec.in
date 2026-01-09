@@ -78,7 +78,6 @@ Summary: DNF5 backend for PackageKit
 Supplements: (libdnf5%{?_isa} and PackageKit%{?_isa})
 Requires: %{name}%{?_isa} = %{version}-%{release}
 Requires: libdnf5-plugin-appstream%{?_isa}
-Requires: rpm-plugin-dbus-announce%{?_isa}
 
 %description backend-dnf5
 PackageKit is a D-Bus abstraction layer that allows the session user
@@ -253,6 +252,8 @@ systemctl disable packagekit-offline-update.service > /dev/null 2>&1 || :
 
 %files backend-dnf5
 %{_libdir}/packagekit-backend/libpk_backend_dnf5.so
+%{_libdir}/rpm-plugins/notify_packagekit.so
+%{_rpmmacrodir}/macros.transaction_notify_packagekit
 
 %files -n dnf4-plugin-notify-PackageKit
 %pycached %{python3_sitelib}/dnf-plugins/notify_packagekit.py

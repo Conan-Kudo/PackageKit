@@ -25,3 +25,28 @@ shared_module(
   install: true,
   install_dir: pk_plugin_dir,
 )
+
+# Build rpm plugin for notifying PackageKit
+rpm_dep = dependency('rpm', required: false)
+dbus_dep = dependency('dbus-1', required: false)
+
+if rpm_dep.found() and dbus_dep.found()
+  rpm_plugindir = rpm_dep.get_variable(pkgconfig: 'rpmplugindir')
+  rpm_macrosdir = rpm_dep.get_variable(pkgconfig: 'rpmhome') + '/macros.d'
+
+  shared_module(
+    'notify_packagekit',
+    'notify_packagekit.c',
+    dependencies: [
+      rpm_dep,
+      dbus_dep,
+    ],
+    install: true,
+    install_dir: rpm_plugindir,
+  )
+
+  install_data(
+    'macros.transaction_notify_packagekit',
+    install_dir: rpm_macrosdir,
+  )
+endif
