@@ -88,6 +88,22 @@ pk_backend_get_roles (PkBackend *backend)
 		-1);
 }
 
+static int
+pk_backend_dnf5_inhibit_notify (PkBackend *backend)
+{
+	PkBackendDnf5Private *priv = (PkBackendDnf5Private *) pk_backend_get_user_data (backend);
+	gint64 current_time = g_get_monotonic_time ();
+	gint64 time_since_last_notification = current_time - priv->last_notification_timestamp;
+
+	/* Inhibit notifications for 5 seconds to avoid processing our own RPM transactions */
+	if (time_since_last_notification < 5 * G_USEC_PER_SEC) {
+		g_debug ("Ignoring signal: too soon after last notification (%" G_GINT64_FORMAT " µs)",
+			 time_since_last_notification);
+		return 1;
+	}
+	return 0;
+}
+
 static void
 pk_backend_context_invalidate_cb (PkBackend *backend, PkBackend *backend_data)
 {
@@ -95,10 +111,13 @@ pk_backend_context_invalidate_cb (PkBackend *backend, PkBackend *backend_data)
 
 	g_debug ("invalidating dnf5 base");
 
+	if (pk_backend_dnf5_inhibit_notify (backend)) return;
+
 	PkBackendDnf5Private *priv = (PkBackendDnf5Private *) pk_backend_get_user_data (backend);
 	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&priv->mutex);
 
 	dnf5_setup_base (priv);
+	priv->last_notification_timestamp = g_get_monotonic_time ();
 }
 
 static void
@@ -117,7 +136,7 @@ pk_backend_dnf5_rpm_dbus_signal_cb (GDBusConnection *connection,
 	/* We only care about EndTransaction to trigger a refresh */
 	/* On EndTransaction, emit updates-change. pk-engine will notify
 	 *  clients, and pk_backend_context_invalidate_cb will run. */
-	if (g_strcmp0 (signal_name, "EndTransaction") == 0)
+	if (g_strcmp0 (signal_name, "EndTransaction") == 0 && !pk_backend_dnf5_inhibit_notify (backend))
 		pk_backend_updates_changed (backend);
 }
 
@@ -140,6 +159,7 @@ pk_backend_initialize (GKeyFile *conf, PkBackend *backend)
 
 	g_mutex_init (&priv->mutex);
 	priv->conf = g_key_file_ref (conf);
+	priv->last_notification_timestamp = 0;
 
 	pk_backend_set_user_data (backend, priv);
 
