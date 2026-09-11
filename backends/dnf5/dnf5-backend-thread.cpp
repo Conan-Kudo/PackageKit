@@ -771,6 +771,21 @@ dnf5_repo_thread(PkBackendJob *job, GVariant *params, gpointer user_data)
 				g_variant_get(params, "(&s&s&s)", &repo_id, &parameter, &value);
 			}
 
+			// Validate that the repository ID exists
+			{
+				libdnf5::repo::RepoQuery query(*priv->base);
+				query.filter_id(repo_id);
+				if (query.empty()) {
+					pk_backend_job_error_code(
+						job,
+						PK_ERROR_ENUM_REPO_NOT_FOUND,
+						"Repo %s not found",
+						repo_id);
+					pk_backend_job_finished(job);
+					return;
+				}
+			}
+
 			// For "enabled" changes, check if the repo is already in the desired state
 			if (g_strcmp0(parameter, "enabled") == 0) {
 				libdnf5::OptionBool opt(false);
