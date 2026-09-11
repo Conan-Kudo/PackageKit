@@ -26,6 +26,7 @@
 #include <libdnf5/advisory/advisory_query.hpp>
 #include <libdnf5/rpm/reldep_list.hpp>
 #include <libdnf5/base/transaction.hpp>
+#include <libdnf5/conf/option_bool.hpp>
 #include <libdnf5/repo/package_downloader.hpp>
 #include <libdnf5/repo/repo_config_override.hpp>
 #include <pk-common-private.h>
@@ -772,10 +773,13 @@ dnf5_repo_thread(PkBackendJob *job, GVariant *params, gpointer user_data)
 
 			// For "enabled" changes, check if the repo is already in the desired state
 			if (g_strcmp0(parameter, "enabled") == 0) {
+				libdnf5::OptionBool opt(false);
+				opt.set(std::string(value));
+				bool enable = opt.get_value();
+
 				libdnf5::repo::RepoQuery query(*priv->base);
 				query.filter_id(repo_id);
 				for (auto repo : query) {
-					bool enable = (g_strcmp0(value, "1") == 0 || g_strcmp0(value, "true") == 0);
 					if (repo->is_enabled() == enable) {
 						pk_backend_job_error_code(
 							job,
@@ -789,7 +793,13 @@ dnf5_repo_thread(PkBackendJob *job, GVariant *params, gpointer user_data)
 
 			// Use RepoConfigOverride to persistently save the override
 			std::map<std::string, std::map<std::string, std::string>> overrides;
-			overrides[repo_id][parameter] = value;
+			if (g_strcmp0(parameter, "enabled") == 0) {
+				libdnf5::OptionBool opt(false);
+				opt.set(std::string(value));
+				overrides[repo_id][parameter] = opt.get_value() ? "1" : "0";
+			} else {
+				overrides[repo_id][parameter] = value;
+			}
 			libdnf5::repo::RepoConfigOverride config_override(*priv->base);
 			config_override.save(overrides);
 			dnf5_setup_base(priv);
