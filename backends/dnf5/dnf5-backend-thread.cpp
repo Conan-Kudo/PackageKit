@@ -27,7 +27,7 @@
 #include <libdnf5/rpm/reldep_list.hpp>
 #include <libdnf5/base/transaction.hpp>
 #include <libdnf5/repo/package_downloader.hpp>
-#include <libdnf5/conf/config_parser.hpp>
+#include <libdnf5/repo/repo_config_override.hpp>
 #include <pk-common-private.h>
 #include <pk-update-detail.h>
 #include <rpm/rpmlib.h>
@@ -770,10 +770,11 @@ dnf5_repo_thread(PkBackendJob *job, GVariant *params, gpointer user_data)
 				g_variant_get(params, "(&s&s&s)", &repo_id, &parameter, &value);
 			}
 
-			libdnf5::repo::RepoQuery query(*priv->base);
-			query.filter_id(repo_id);
-			for (auto repo : query) {
-				if (g_strcmp0(parameter, "enabled") == 0) {
+			// For "enabled" changes, check if the repo is already in the desired state
+			if (g_strcmp0(parameter, "enabled") == 0) {
+				libdnf5::repo::RepoQuery query(*priv->base);
+				query.filter_id(repo_id);
+				for (auto repo : query) {
 					bool enable = (g_strcmp0(value, "1") == 0 || g_strcmp0(value, "true") == 0);
 					if (repo->is_enabled() == enable) {
 						pk_backend_job_error_code(
@@ -783,16 +784,14 @@ dnf5_repo_thread(PkBackendJob *job, GVariant *params, gpointer user_data)
 						pk_backend_job_finished(job);
 						return;
 					}
-					if (enable)
-						repo->enable();
-					else
-						repo->disable();
-					libdnf5::ConfigParser parser;
-					parser.read(repo->get_repo_file_path());
-					parser.set_value(repo_id, "enabled", value);
-					parser.write(repo->get_repo_file_path(), false);
 				}
 			}
+
+			// Use RepoConfigOverride to persistently save the override
+			std::map<std::string, std::map<std::string, std::string>> overrides;
+			overrides[repo_id][parameter] = value;
+			libdnf5::repo::RepoConfigOverride config_override(*priv->base);
+			config_override.save(overrides);
 			dnf5_setup_base(priv);
 		} else if (role == PK_ROLE_ENUM_REPO_REMOVE) {
 			gchar *repo_id = NULL;
